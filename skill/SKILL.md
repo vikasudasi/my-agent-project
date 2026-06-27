@@ -1,82 +1,127 @@
 ---
 name: task-management
-description: Manage projects, ordered tasks/subtasks, and documentation via a local MCP server. Use when initializing a project, creating or reordering tasks, tracking progress, or writing documentation for tasks and projects. Enable this skill when working on any multi-step project that benefits from structured task management.
+description: Manage projects, ordered tasks/subtasks, and documentation via CLI or MCP. Use when initializing a project, creating or reordering tasks, tracking progress, or writing documentation for tasks and projects. Enable this skill when working on any multi-step project that benefits from structured task management. Prefer the CLI path for simplicity (no server process needed).
 ---
 
 # Task Management System
 
-This skill connects to a local **MCP server** that provides project and task management backed by SQLite. Any MCP-compatible AI agent can use it to organize, track, and document its work.
+Manage projects, ordered tasks (with subtasks), and documentation — all backed by SQLite.
+Works **via CLI** (zero setup) or **via MCP** (for IDE integration).
 
-## Quick Start
+## Access Modes
 
-1. Ensure the MCP server is running (see [reference.md](reference.md) for setup).
-2. Use the commands below to manage your work.
+| Mode | How to use | Server needed? |
+|---|---|---|
+| **CLI** | `python cli.py <command>` | **No** — direct SQLite access |
+| **MCP** | Via MCP client (Cursor, Claude Desktop) | Yes — `python mcp_server.py` |
+| **Web** | Browser at localhost:8000 | Yes — `cd dashboard && uvicorn app:app --reload --port 8000` |
+
+All modes share the same `server/task_manager.db` — you can switch freely.
+
+## Quick Start (CLI — no server needed)
+
+```bash
+cd path/to/server
+
+# Initialize the database (first time only)
+python cli.py db init
+
+# Create a project
+python cli.py project create "Build Auth System" --desc "JWT-based auth"
+# → Returns project_id (printed to stderr so scripts can capture it)
+
+# Create ordered tasks
+python cli.py task create <project_id> "Research libraries"
+python cli.py task create <project_id> "Implement JWT" --after <task_id>
+
+# Check progress
+python cli.py project get <project_id>
+```
+
+Every command outputs **JSON** to stdout. The entity `id` is also printed to stderr so shell scripts can capture it:
+
+```bash
+PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
+```
 
 ## Available Commands
 
 ### Projects
 
-| Command | What it does |
+| Action | CLI command |
 |---|---|
-| `project_create(name, description)` | Create a new project. Returns a `project_id`. |
-| `project_list()` | List all projects with current status. |
-| `project_get(project_id)` | Get project details, task counts, and progress %. |
-| `project_update(project_id, name?, description?, status?)` | Update project fields. Status: `active`, `archived`, `completed`. |
-| `project_delete(project_id)` | Delete a project and all its tasks. |
+| Create | `python cli.py project create "Name" --desc "..."` |
+| List | `python cli.py project list` |
+| Get (with progress) | `python cli.py project get <project_id>` |
+| Update | `python cli.py project update <project_id> --status completed` |
+| Delete | `python cli.py project delete <project_id>` |
 
 ### Tasks (Ordered + Subtasks)
 
-| Command | What it does |
+| Action | CLI command |
 |---|---|
-| `task_create(project_id, title, description?, parent_id?, after_task_id?)` | Create a task. Use `parent_id` for subtasks. Use `after_task_id` to place it after a specific sibling. |
-| `task_list(project_id, status?, parent_id?)` | List tasks in order, optionally filtered. |
-| `task_get(task_id)` | Get a single task's details. |
-| `task_tree(task_id)` | Get a task and its full subtree of children. |
-| `task_subtree(project_id)` | Get the whole project as a nested task tree. |
-| `task_update(task_id, title?, description?, status?)` | Update task fields. Status: `pending`, `in_progress`, `completed`, `blocked`, `failed`, `cancelled`. |
-| `task_move(task_id, after_task_id?, parent_id?)` | Reorder a task or reparent it. Set `parent_id=""` to make it a root task. |
-| `task_delete(task_id)` | Delete a task (cascades to subtasks). |
+| Create | `python cli.py task create <project_id> "Title" --desc "..." --after <tid> --parent <tid>` |
+| List | `python cli.py task list <project_id> [--status pending] [--parent <tid>]` |
+| Get | `python cli.py task get <task_id>` |
+| Tree (task + children) | `python cli.py task tree <task_id>` |
+| Subtree (full project) | `python cli.py task subtree <project_id>` |
+| Update | `python cli.py task update <task_id> --status in_progress --title "New"` |
+| Move | `python cli.py task move <task_id> --after <tid> --parent <tid>` |
+| Delete | `python cli.py task delete <task_id>` |
 
 ### Documentation
 
-| Command | What it does |
+| Action | CLI command |
 |---|---|
-| `doc_project_get(project_id)` | Get project documentation (markdown). |
-| `doc_project_update(project_id, content)` | Write project documentation (markdown). |
-| `doc_task_get(task_id)` | Get task documentation (markdown). |
-| `doc_task_update(task_id, content)` | Write task documentation (markdown). |
+| Get project docs | `python cli.py doc project get <project_id>` |
+| Set project docs | `python cli.py doc project set <project_id> "# Markdown..."` |
+| Get task docs | `python cli.py doc task get <task_id>` |
+| Set task docs | `python cli.py doc task set <task_id> "# Markdown..."` |
 
-## Workflow Pattern
+### Database
 
-Here's a typical workflow for an AI agent starting a new project:
+| Action | CLI command |
+|---|---|
+| Initialize | `python cli.py db init` |
+| Show DB path | `python cli.py db path` |
 
-```
-1. project_create("Build Authentication System", "JWT-based auth with login/signup")
-   → Returns: project_id = "abc-123"
+## Workflow Pattern (CLI)
 
-2. task_create("abc-123", "Research auth libraries",
-               after_task_id=null)   → Task 1
-   task_create("abc-123", "Design database schema",
-               after_task_id="<task_1_id>")   → Task 2 (after Task 1)
-   task_create("abc-123", "Implement JWT middleware",
-               after_task_id="<task_2_id>")   → Task 3 (after Task 2)
+Here's a typical session for an AI agent:
 
-3. task_create("abc-123", "Schema for users table",
-               parent_id="<task_2_id>")   → Subtask of Task 2
+```bash
+# 1. Start fresh — see what exists
+python cli.py project list
 
-4. task_update("<task_1_id>", status="completed")   → Mark done
+# 2. Create a project
+python cli.py project create "Authentication System" --desc "JWT-based auth"
 
-5. doc_project_update("abc-123", "# Auth System\n## Design\n...")
-   → Write documentation as you work
+# 3. Create ordered top-level tasks
+python cli.py task create PROJECT_ID "Research auth libraries"
+python cli.py task create PROJECT_ID "Design database schema" --after TASK_1_ID
+python cli.py task create PROJECT_ID "Implement middleware" --after TASK_2_ID
+
+# 4. Add subtasks to a task
+python cli.py task create PROJECT_ID "Compare Passport vs JWT" --parent TASK_1_ID
+
+# 5. Update status as work progresses
+python cli.py task update TASK_1_ID --status completed
+python cli.py task update TASK_3_ID --status in_progress
+
+# 6. Write documentation
+python cli.py doc project set PROJECT_ID "# Auth System\n## Design\nJWT with refresh tokens..."
+
+# 7. Check overall progress
+python cli.py project get PROJECT_ID
 ```
 
 ## Task Ordering
 
-Tasks maintain their order via fractional indexing. When creating or moving:
+Tasks use fractional indexing. When creating or moving:
 
-- **Omit** `after_task_id` → appends at the end of the sibling list
-- **Set** `after_task_id` → places directly after that sibling
-- The system handles the math — no need to renumber
+- **Omit** `--after` → task goes to the end of the sibling list
+- **Set** `--after <task_id>` → task goes right after that sibling
+- The system handles the math — no renumbering needed
 
 ## Status Meanings
 
@@ -91,10 +136,11 @@ Tasks maintain their order via fractional indexing. When creating or moving:
 
 ## Tips
 
-- **Start each session** by calling `project_list()` to see what's pending, then `task_subtree(project_id)` to see what needs doing.
-- **Update status** as you complete work — the dashboard will reflect it in real-time.
-- **Use docs** to accumulate knowledge: design decisions, API references, lessons learned.
-- **Create subtasks** to break down complex tasks into manageable steps.
+- **Session start**: Run `python cli.py project list` then `python cli.py task subtree <project_id>` to see where you left off.
+- **Capture IDs**: The entity ID is printed to stderr: `ID=$(python cli.py create ... 2>&1 >/dev/null)`
+- **Pretty output**: Add `--pretty` or `-p` for indented JSON (useful for human reading).
+- **Update as you go**: Keep statuses current — the web dashboard reflects changes in real-time.
+- **Use docs**: Accumulate design decisions, API references, and lessons learned in markdown docs.
 
-For complete API details and setup instructions, see [reference.md](reference.md).
-For examples of common workflows, see [examples.md](examples.md).
+For the full API reference including all parameters, see [reference.md](reference.md).
+For complete worked examples, see [examples.md](examples.md).

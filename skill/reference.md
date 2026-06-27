@@ -61,6 +61,64 @@ To use this MCP server in Cursor, add to your `.cursor/mcp.json`:
 }
 ```
 
+## CLI Usage (Zero-Setup Path)
+
+The CLI wraps the same database directly — no server process needed. Every command outputs **JSON** to stdout and echoes the entity ID to stderr for easy shell scripting.
+
+### Capturing IDs in Shell
+
+```bash
+# Redirect: stderr → stdout, stdout → /dev/null to get the ID
+PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
+
+# Or use --pretty to read it in the JSON
+python cli.py project list --pretty
+```
+
+### Projects
+
+| Action | CLI Command |
+|---|---|
+| Create | `python cli.py project create <name> [--desc "..."]` |
+| List | `python cli.py project list` |
+| Get | `python cli.py project get <project_id>` |
+| Update | `python cli.py project update <project_id> [--name] [--desc] [--status]` |
+| Delete | `python cli.py project delete <project_id>` |
+
+### Tasks
+
+| Action | CLI Command |
+|---|---|
+| Create | `python cli.py task create <project_id> <title> [--desc] [--parent] [--after]` |
+| List | `python cli.py task list <project_id> [--status] [--parent]` |
+| Get | `python cli.py task get <task_id>` |
+| Tree | `python cli.py task tree <task_id>` |
+| Subtree | `python cli.py task subtree <project_id>` |
+| Update | `python cli.py task update <task_id> [--title] [--desc] [--status]` |
+| Move | `python cli.py task move <task_id> [--after] [--parent]` |
+| Delete | `python cli.py task delete <task_id>` |
+
+### Documentation
+
+| Action | CLI Command |
+|---|---|
+| Get project doc | `python cli.py doc project get <project_id>` |
+| Set project doc | `python cli.py doc project set <project_id> "<markdown>"` |
+| Get task doc | `python cli.py doc task get <task_id>` |
+| Set task doc | `python cli.py doc task set <task_id> "<markdown>"` |
+
+### Database Utilities
+
+| Action | CLI Command |
+|---|---|
+| Initialize | `python cli.py db init` |
+| Show path | `python cli.py db path` |
+
+### All CLI commands accept these global flags:
+
+- `--pretty` / `-p` — Indented JSON (easier for humans to read)
+- `--help` / `-h` — Show help for any subcommand
+
 ## Database
 
 The system uses SQLite. The database file is `server/task_manager.db`.
