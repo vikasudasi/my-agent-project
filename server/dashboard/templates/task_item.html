@@ -1,0 +1,80 @@
+<div class="task-item border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors"
+     style="margin-left: {{ level * 1.5 if level is defined else 0 }}rem">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3 flex-1 min-w-0">
+            <!-- Status indicator -->
+            <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
+                <input type="hidden" name="status"
+                       value="{% if task.status == 'completed' %}pending{% else %}completed{% endif %}">
+                <button type="submit"
+                        class="w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors"
+                        style="border-color: {{ status_color(task.status) }};
+                               {% if task.status == 'completed' %}background-color: {{ status_color(task.status) }};{% endif %}">
+                    {% if task.status == 'completed' %}
+                        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                    {% endif %}
+                </button>
+            </form>
+
+            <!-- Title -->
+            <div class="flex-1 min-w-0">
+                <span class="text-sm font-medium text-gray-900 {% if task.status == 'completed' %}line-through text-gray-400{% endif %}">
+                    {{ task.title }}
+                </span>
+                {% if task.description %}
+                    <p class="text-xs text-gray-500 truncate">{{ task.description }}</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-shrink-0">
+            <!-- Status badge -->
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize"
+                  style="background-color: {{ status_color(task.status) }}20; color: {{ status_color(task.status) }}">
+                {{ task.status }}
+            </span>
+
+            <!-- Status change dropdown (simplified) -->
+            <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
+                <select name="status" onchange="this.form.submit()"
+                        class="text-xs border border-gray-300 rounded px-1.5 py-1 bg-white focus:ring-1 focus:ring-blue-500">
+                    {% for s in ['pending', 'in_progress', 'completed', 'blocked', 'failed', 'cancelled'] %}
+                        <option value="{{ s }}" {% if task.status == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+
+            <!-- Doc link -->
+            <a href="/tasks/{{ task.id }}/doc"
+               class="text-xs text-gray-400 hover:text-gray-600 px-1" title="Documentation">&#128196;</a>
+
+            <!-- Subtask form toggle -->
+            <button onclick="document.getElementById('subtask-{{ task.id }}').classList.toggle('hidden')"
+                    class="text-xs text-blue-600 hover:text-blue-800">+sub</button>
+        </div>
+    </div>
+
+    <!-- Subtask creation form -->
+    <form id="subtask-{{ task.id }}"
+          action="/projects/{{ task.project_id }}/tasks/create" method="POST"
+          class="hidden mt-2 flex gap-2">
+        <input type="hidden" name="parent_id" value="{{ task.id }}">
+        <input type="text" name="title" placeholder="Subtask title" required
+               class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded">
+        <button type="submit"
+                class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
+    </form>
+
+    <!-- Children -->
+    {% if task.children %}
+        <div class="mt-2 space-y-2">
+            {% for child in task.children %}
+                {% with task=child, level=(level + 1) if level is defined else 1 %}
+                    {% include "task_item.html" %}
+                {% endwith %}
+            {% endfor %}
+        </div>
+    {% endif %}
+</div>

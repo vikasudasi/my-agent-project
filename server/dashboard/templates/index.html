@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Task Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <h1 class="text-xl font-bold text-gray-900">AI Task Manager</h1>
+                <span class="text-sm text-gray-500">Dashboard</span>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Create Project -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
+            <h2 class="text-lg font-semibold text-gray-900 mb-4">New Project</h2>
+            <form action="/projects/create" method="POST" class="flex gap-3 items-end">
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Project Name</label>
+                    <input type="text" name="name" required
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                           placeholder="e.g. Build Landing Page">
+                </div>
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                    <input type="text" name="description"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                           placeholder="Optional description">
+                </div>
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                    Create
+                </button>
+            </form>
+        </div>
+
+        <!-- Project List -->
+        {% if projects %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {% for p in projects %}
+                    <div class="bg-white rounded-lg shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+                        <a href="/projects/{{ p.id }}" class="block p-6">
+                            <div class="flex items-start justify-between mb-3">
+                                <h3 class="text-lg font-semibold text-gray-900">{{ p.name }}</h3>
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                                      style="background-color: {{ status_color(p.status) }}20; color: {{ status_color(p.status) }}">
+                                    {{ p.status }}
+                                </span>
+                            </div>
+                            {% if p.description %}
+                                <p class="text-sm text-gray-600 mb-4 line-clamp-2">{{ p.description }}</p>
+                            {% endif %}
+                            <div class="flex items-center gap-4 text-sm text-gray-500">
+                                <span>{{ p.total_tasks }} tasks</span>
+                                <span>{{ p.completed_tasks }} done</span>
+                            </div>
+                            {% if p.total_tasks > 0 %}
+                                <div class="mt-3 w-full bg-gray-200 rounded-full h-2">
+                                    <div class="h-2 rounded-full transition-all"
+                                         style="width: {{ p.progress_pct }}%; background-color: {{ status_color('completed') }}"></div>
+                                </div>
+                            {% endif %}
+                        </a>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-center py-16">
+                <div class="text-gray-400 text-6xl mb-4">📋</div>
+                <h3 class="text-lg font-medium text-gray-600 mb-2">No projects yet</h3>
+                <p class="text-sm text-gray-500">Create your first project above to get started.</p>
+            </div>
+        {% endif %}
+    </main>
+</body>
+</html>

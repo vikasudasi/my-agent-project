@@ -1,0 +1,15 @@
+# SQLite database
+server/task_manager.db
+server/task_manager.db-shm
+server/task_manager.db-wal
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Environment
+.env
