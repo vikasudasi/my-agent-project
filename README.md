@@ -87,6 +87,41 @@ python mcp_server.py
 }
 ```
 
+### HTTP/SSE Transport
+
+The MCP server also supports **HTTP with SSE transport** for clients that can't run a local subprocess (e.g. remote agents, web-based MCP clients):
+
+```bash
+cd server
+python mcp_server.py --http --port 8000
+```
+
+Two endpoints are exposed:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /sse` | Client connects here to receive server-sent events |
+| `POST /messages?session_id=...` | Client posts JSON-RPC messages |
+
+**Client config** (for MCP clients that support SSE):
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse"
+    }
+  }
+}
+```
+
+Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+
+```bash
+npx @modelcontextprotocol/inspector http://localhost:8000/sse
+```
+
 ## Quick Start (Web Dashboard)
 
 ```bash
@@ -118,7 +153,7 @@ my-agent-project/
 │   ├── schema.sql              # Database schema
 │   ├── db.py                   # SQLite data access layer
 │   ├── cli.py                  # Zero-dep CLI (argparse)
-│   ├── mcp_server.py           # MCP server (22 tools)
+│   ├── mcp_server.py           # MCP server (stdio + HTTP/SSE)
 │   ├── requirements.txt
 │   ├── dashboard/
 │   │   ├── app.py              # FastAPI web dashboard

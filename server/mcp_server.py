@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from mcp.server import Server
+from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, CallToolResult
 
@@ -665,7 +666,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Entry point — stdio (default)
 # ---------------------------------------------------------------------------
 
 async def main():
@@ -678,6 +679,102 @@ async def main():
         )
 
 
+# ---------------------------------------------------------------------------
+# Entry point — HTTP / SSE
+# ---------------------------------------------------------------------------
+
+_HTTP_DOC = """
+Start the MCP server over HTTP (SSE transport).
+
+The server exposes two endpoints:
+  GET  /sse       — Client connects here to receive server-sent events
+  POST /messages  — Client posts JSON-RPC messages here (session_id query param)
+
+Use the MCP Inspector to test:
+  npx @modelcontextprotocol/inspector
+
+Or configure any MCP-compatible client with the SSE URL.
+"""
+
+
+def create_starlette_app() -> "Starlette":
+    """Build the Starlette ASGI app with SSE transport and CORS."""
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.middleware.cors import CORSMiddleware
+    from starlette.routing import Route
+
+    sse = SseServerTransport("/messages")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+    async def handle_messages(request):
+        await sse.handle_post_message(
+            request.scope, request.receive, request._send
+        )
+
+    return Starlette(
+        debug=False,
+        middleware=[
+            Middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_methods=["*"],
+                allow_headers=["*"],
+            ),
+        ],
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        ],
+    )
+
+
+async def main_http(host: str = "0.0.0.0", port: int = 8000):
+    """Run the MCP server over HTTP with SSE transport."""
+    import uvicorn
+
+    init_db()
+    app = create_starlette_app()
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server_uv = uvicorn.Server(config)
+    await server_uv.serve()
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
+    import argparse
     import anyio
-    anyio.run(main)
+
+    parser = argparse.ArgumentParser(
+        description="Task Manager MCP Server — stdio or HTTP/SSE"
+    )
+    parser.add_argument(
+        "--http", action="store_true",
+        help="Run over HTTP/SSE instead of stdio"
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0",
+        help="Host to bind (default: 0.0.0.0, only with --http)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000,
+        help="Port to bind (default: 8000, only with --http)"
+    )
+    args = parser.parse_args()
+
+    if args.http:
+        anyio.run(main_http, args.host, args.port)
+    else:
+        anyio.run(main)
