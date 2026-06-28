@@ -85,3 +85,15 @@ def subtask(task):
         db_module.delete_task(s["id"])
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Auth fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def api_key() -> str:
+    """Create a test agent and return its API key for use in CLI tests."""
+    agent = db_module.onboard_agent("test-agent", "Test Master")
+    assert agent is not None, "Failed to onboard test agent"
+    return agent["api_key"]

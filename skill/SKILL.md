@@ -20,6 +20,83 @@ All modes share the same `server/task_manager.db` — you can switch freely.
 
 ---
 
+## 🔑 Agent Onboarding (Required Before First Use)
+
+Every agent must register before making any changes. This creates an identity that's recorded in the audit log.
+
+### 1. Register your agent
+
+```bash
+python cli.py agent onboard --name "my-agent-name" --master "Your Name"
+```
+
+This returns:
+```json
+{
+  "agent_id": "uuid",
+  "agent_name": "my-agent-name",
+  "master_name": "Your Name",
+  "api_key": "tm_<64-hex-chars>",
+  "created_at": "..."
+}
+```
+
+### 2. Save your credentials
+
+Save the returned JSON to a local file **outside this repo** (e.g. `~/.my-agent/onboarding.json`). This file is **never committed to git**.
+
+Example file structure:
+```json
+{
+  "agent_name": "my-agent-name",
+  "master_name": "Your Name",
+  "api_key": "tm_...",
+  "agent_id": "uuid..."
+}
+```
+
+### 3. Authenticate every session
+
+Set your API key as an environment variable at the start of each session:
+
+```bash
+export TM_API_KEY="tm_<your-key-here>"
+```
+
+All subsequent CLI commands will use this key automatically. You can also pass it per-command with `--api-key`:
+
+```bash
+python cli.py task create <id> "Title" --api-key "tm_..."
+```
+
+### 4. Verify you're authenticated
+
+```bash
+python cli.py agent list --pretty
+```
+
+This lists all registered agents. If you get an auth error, your key is missing or invalid.
+
+### 5. Lost your key?
+
+Ask an admin to reissue it from the dashboard at **/admin/agents**. The old key will stop working immediately.
+
+### Audit Trail
+
+Every mutation (create, update, delete) is logged with your `agent_name` and `master_name`. View the audit log:
+
+```bash
+python cli.py agent audit task <task_id>
+python cli.py agent audit project <project_id>
+python cli.py agent audit-log --agent "my-agent-name"
+```
+
+### Dashboard Access
+
+The web dashboard at `localhost:8000` uses separate credentials. Default login: **admin / admin**. Change the password at **/admin/settings**.
+
+---
+
 ## 🧠 Agent Workflow Discipline
 
 This is the most important section. Follow these rules **every session** to keep the system useful.
@@ -171,6 +248,17 @@ Default `--type` is `spec`. Use `--type progress` or `--type closure` for other 
 
 `entity_type` is `project` or `task`.
 
+### Agent & Audit
+
+| Action | CLI command |
+|---|---|
+| Onboard (register) | `python cli.py agent onboard --name "agent" --master "You"` |
+| List agents | `python cli.py agent list` |
+| View audit for entity | `python cli.py agent audit task <task_id>` |
+| View audit by agent | `python cli.py agent audit-log --agent <name>` |
+
+**Auth**: Most commands require `TM_API_KEY` env var or `--api-key` flag. Onboard and read-only commands skip auth.
+
 ### Database
 
 | Action | CLI command |
@@ -225,7 +313,10 @@ Tasks use fractional indexing. When creating or moving:
 
 ## Tips
 
-- **Session start**: Run `python cli.py project list` then `python cli.py task subtree <project_id>` to see where you left off.
+- **Session start**: Run `export TM_API_KEY="..."` then `python cli.py project list` to see what exists.
+- **Auth**: Set `TM_API_KEY` env var at session start. The `--api-key` flag overrides it per-command.
+- **First time**: Run `python cli.py agent onboard --name "X" --master "Y"` before making any changes.
+- **Save your key**: Store the onboarding response in `~/.my-agent/onboarding.json` (never in the repo).
 - **Capture IDs**: The entity ID is printed to stderr: `ID=$(python cli.py create ... 2>&1 >/dev/null)`
 - **Pretty output**: Add `--pretty` or `-p` for indented JSON (useful for human reading).
 - **Update as you go**: Keep statuses current — the web dashboard reflects changes in real-time.

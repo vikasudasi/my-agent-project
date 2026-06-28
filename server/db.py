@@ -1,6 +1,8 @@
 import sqlite3
 import uuid
 import os
+import hashlib
+import secrets
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -407,3 +409,129 @@ def delete_comment(comment_id: str) -> bool:
         cur = conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
         deleted = cur.rowcount > 0
     return deleted
+
+
+# ---------------------------------------------------------------------------
+# Agent onboarding & auth
+# ---------------------------------------------------------------------------
+
+def _hash_key(api_key: str) -> str:
+    """SHA-256 hash of an API key."""
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def _generate_api_key() -> str:
+    """Generate a random API key with 'tm_' prefix."""
+    return "tm_" + secrets.token_hex(32)
+
+
+def onboard_agent(name: str, master_name: str) -> Optional[dict]:
+    """Register a new agent. Returns agent info + plaintext api_key (shown once)."""
+    api_key = _generate_api_key()
+    key_hash = _hash_key(api_key)
+    aid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO agents (id, name, master_name, api_key_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (aid, name, master_name, key_hash, now),
+            )
+        except sqlite3.IntegrityError:
+            return None  # Name already exists
+        row = conn.execute("SELECT * FROM agents WHERE id = ?", (aid,)).fetchone()
+    result = dict(row)
+    result["api_key"] = api_key  # Plaintext, shown once
+    return result
+
+
+def validate_api_key(api_key: str) -> Optional[dict]:
+    """Validate an API key. Returns agent dict if valid, None if invalid."""
+    key_hash = _hash_key(api_key)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, master_name, role FROM agents WHERE api_key_hash = ? AND active = 1",
+            (key_hash,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_agents() -> list[dict]:
+    """List all registered agents (excluding api_key_hash)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, name, master_name, role, created_at, active FROM agents ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_agent(agent_id: str) -> Optional[dict]:
+    """Get a single agent by ID."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, master_name, role, created_at, active FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def reissue_api_key(agent_id: str) -> Optional[dict]:
+    """Generate a new API key for an agent. Invalidates the old one. Returns new plaintext key once."""
+    api_key = _generate_api_key()
+    key_hash = _hash_key(api_key)
+    with get_connection() as conn:
+        existing = conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if not existing:
+            return None
+        conn.execute("UPDATE agents SET api_key_hash = ? WHERE id = ?", (key_hash, agent_id))
+        row = conn.execute(
+            "SELECT id, name, master_name, role, created_at, active FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+    result = dict(row)
+    result["api_key"] = api_key  # Plaintext, shown once
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Audit logging
+# ---------------------------------------------------------------------------
+
+def log_audit(agent_name: str, master_name: str, entity_type: str,
+              entity_id: str, action: str, field: Optional[str] = None,
+              old_value: Optional[str] = None,
+              new_value: Optional[str] = None) -> None:
+    """Record a mutation in the audit log."""
+    aid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO agent_audit_log (id, agent_name, master_name, entity_type, "
+            "entity_id, action, field, old_value, new_value, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (aid, agent_name, master_name, entity_type, entity_id,
+             action, field, old_value, new_value, now),
+        )
+
+
+def get_audit_log(entity_type: str, entity_id: str) -> list[dict]:
+    """Get audit log entries for a specific entity."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_audit_log WHERE entity_type = ? AND entity_id = ? "
+            "ORDER BY created_at DESC",
+            (entity_type, entity_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_audit_log_by_agent(agent_name: str) -> list[dict]:
+    """Get audit log entries for a specific agent."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_audit_log WHERE agent_name = ? "
+            "ORDER BY created_at DESC LIMIT 100",
+            (agent_name,),
+        ).fetchall()
+    return [dict(r) for r in rows]

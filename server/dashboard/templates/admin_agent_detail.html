@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ agent.name }} - Agent Detail</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <div class="flex items-center gap-4">
+                    <a href="/admin/agents" class="text-gray-400 hover:text-gray-600">&larr; Agents</a>
+                    <h1 class="text-xl font-bold text-gray-900">{{ agent.name }}</h1>
+                </div>
+                <a href="/logout" class="text-sm text-red-600 hover:text-red-800">Logout</a>
+            </div>
+        </div>
+    </nav>
+    <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        <!-- Agent info -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <dl class="grid grid-cols-2 gap-4 text-sm">
+                <div><dt class="text-gray-500">Name</dt><dd class="font-medium">{{ agent.name }}</dd></div>
+                <div><dt class="text-gray-500">Master</dt><dd class="font-medium">{{ agent.master_name }}</dd></div>
+                <div><dt class="text-gray-500">Role</dt><dd class="font-medium capitalize">{{ agent.role }}</dd></div>
+                <div><dt class="text-gray-500">Created</dt><dd class="font-medium">{{ agent.created_at }}</dd></div>
+                <div><dt class="text-gray-500">Status</dt>
+                    <dd><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium {% if agent.active %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-800{% endif %}">{{ 'Active' if agent.active else 'Inactive' }}</span></dd>
+                </div>
+            </dl>
+
+            <!-- Reissue key -->
+            <form action="/admin/agents/{{ agent.id }}/reissue" method="POST" class="mt-6"
+                  onsubmit="return confirm('Reissue key for {{ agent.name }}? The old key will stop working immediately.')">
+                <button type="submit" class="px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-md hover:bg-amber-700">
+                    Reissue API Key
+                </button>
+            </form>
+
+            {% if new_key %}
+            <div class="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+                <p class="text-sm font-medium text-yellow-800 mb-2">⚠️ New API Key — Save this now. It will not be shown again.</p>
+                <code class="block p-3 bg-yellow-100 rounded text-sm font-mono break-all">{{ new_key }}</code>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Audit log -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h2 class="text-lg font-semibold text-gray-900 mb-4">Activity Log</h2>
+            {% if audit %}
+            <div class="space-y-2">
+                {% for entry in audit %}
+                <div class="flex items-start gap-3 text-sm border-l-2 border-gray-200 pl-3 py-1">
+                    <span class="text-gray-400 text-xs whitespace-nowrap">{{ entry.created_at }}</span>
+                    <span class="font-medium text-gray-700 capitalize">{{ entry.action }}</span>
+                    <span class="text-gray-500">{{ entry.entity_type }} {{ entry.entity_id[:8] }}...</span>
+                    {% if entry.field %}
+                    <span class="text-gray-400">({{ entry.field }})</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-sm text-gray-400 italic">No activity yet.</p>
+            {% endif %}
+        </div>
+    </main>
+</body>
+</html>

@@ -55,3 +55,32 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_rank  ON tasks(project_id, rank);
 CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(entity_id, created_at);
+
+-- Agents (for onboarded agents + admin)
+CREATE TABLE IF NOT EXISTS agents (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    master_name  TEXT NOT NULL,
+    api_key_hash TEXT NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'agent' CHECK(role IN ('agent', 'admin')),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    active       INTEGER NOT NULL DEFAULT 1
+);
+
+-- Audit log for all mutations (agent_name + master_name attribution)
+CREATE TABLE IF NOT EXISTS agent_audit_log (
+    id          TEXT PRIMARY KEY,
+    agent_name  TEXT NOT NULL,
+    master_name TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id   TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    field       TEXT,
+    old_value   TEXT,
+    new_value   TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_agent ON agent_audit_log(agent_name);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON agent_audit_log(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON agent_audit_log(created_at);

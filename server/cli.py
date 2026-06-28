@@ -20,6 +20,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 # Ensure we can import db.py from the same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,14 @@ from db import (
     add_comment,
     list_comments,
     delete_comment,
+    onboard_agent,
+    validate_api_key,
+    list_agents,
+    get_agent,
+    reissue_api_key,
+    log_audit,
+    get_audit_log,
+    get_audit_log_by_agent,
 )
 
 # ---------------------------------------------------------------------------
@@ -77,6 +86,29 @@ def err(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auth helper
+# ---------------------------------------------------------------------------
+
+def _get_api_key(args) -> Optional[str]:
+    """Get API key from --api-key flag or TM_API_KEY env var."""
+    key = getattr(args, "api_key", None)
+    if key:
+        return key
+    return os.environ.get("TM_API_KEY")
+
+
+def require_auth(args) -> dict:
+    """Validate API key and return agent info. Exits on failure."""
+    api_key = _get_api_key(args)
+    if not api_key:
+        err("Authentication required. Provide --api-key or set TM_API_KEY environment variable.")
+    agent = validate_api_key(api_key)
+    if not agent:
+        err("Invalid API key. Use 'agent onboard' to register or ask admin to reissue your key.")
+    return agent
+
+
+# ---------------------------------------------------------------------------
 # Subcommand builders
 # ---------------------------------------------------------------------------
 
@@ -90,15 +122,16 @@ def cmd_db_path(_args):
 
 
 def cmd_project_create(args):
+    agent = require_auth(args)
     result = create_project(args.name, args.desc or "")
     if not result:
         err("Failed to create project")
+    log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
     out(result, pretty=args.pretty)
 
 
 def cmd_project_list(args):
     projects = list_projects()
-    # Enrich with progress
     enriched = []
     for p in projects:
         progress = get_project_progress(p["id"])
@@ -114,6 +147,8 @@ def cmd_project_get(args):
 
 
 def cmd_project_update(args):
+    agent = require_auth(args)
+    old = get_project(args.project_id)
     result = update_project(
         args.project_id,
         name=args.name,
@@ -122,17 +157,28 @@ def cmd_project_update(args):
     )
     if not result:
         err(f"Project '{args.project_id}' not found")
+    if old:
+        for field in ("name", "description", "status"):
+            old_val = old.get(field)
+            new_val = result.get(field)
+            if old_val != new_val:
+                log_audit(agent["name"], agent["master_name"], "project", args.project_id,
+                          "updated", field, str(old_val) if old_val else None,
+                          str(new_val) if new_val else None)
     out(result, pretty=args.pretty)
 
 
 def cmd_project_delete(args):
+    agent = require_auth(args)
     success = delete_project(args.project_id)
     if not success:
         err(f"Project '{args.project_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "project", args.project_id, "deleted")
     out({"deleted": True})
 
 
 def cmd_task_create(args):
+    agent = require_auth(args)
     result = create_task(
         args.project_id,
         args.title,
@@ -142,6 +188,7 @@ def cmd_task_create(args):
     )
     if not result:
         err(f"Project '{args.project_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
     out(result, pretty=args.pretty)
 
 
@@ -174,6 +221,8 @@ def cmd_task_subtree(args):
 
 
 def cmd_task_update(args):
+    agent = require_auth(args)
+    old = get_task(args.task_id)
     result = update_task(
         args.task_id,
         title=args.title,
@@ -182,14 +231,24 @@ def cmd_task_update(args):
     )
     if not result:
         err(f"Task '{args.task_id}' not found")
+    if old:
+        for field in ("title", "description", "status"):
+            old_val = old.get(field)
+            new_val = result.get(field)
+            if old_val != new_val:
+                action = "status_changed" if field == "status" else "updated"
+                log_audit(agent["name"], agent["master_name"], "task", args.task_id,
+                          action, field, str(old_val) if old_val else None,
+                          str(new_val) if new_val else None)
     out(result, pretty=args.pretty)
 
 
 def cmd_task_move(args):
-    # Empty string for --parent means "make root level"
+    agent = require_auth(args)
     parent = args.parent if args.parent is not None else None
     if args.parent == "":
         parent = None
+    old = get_task(args.task_id)
     result = move_task(
         args.task_id,
         after_task_id=args.after,
@@ -197,13 +256,19 @@ def cmd_task_move(args):
     )
     if not result:
         err(f"Task '{args.task_id}' not found")
+    if old:
+        if old.get("parent_id") != result.get("parent_id"):
+            log_audit(agent["name"], agent["master_name"], "task", args.task_id,
+                      "moved", "parent_id", old.get("parent_id"), result.get("parent_id"))
     out(result, pretty=args.pretty)
 
 
 def cmd_task_delete(args):
+    agent = require_auth(args)
     success = delete_task(args.task_id)
     if not success:
         err(f"Task '{args.task_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "task", args.task_id, "deleted")
     out({"deleted": True})
 
 
@@ -213,9 +278,12 @@ def cmd_doc_project_get(args):
 
 
 def cmd_doc_project_set(args):
+    agent = require_auth(args)
     ok = upsert_project_doc(args.project_id, args.content, args.type)
     if not ok:
         err(f"Project '{args.project_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "project", args.project_id,
+              "doc_updated", f"doc_{args.type}")
     out({"updated": True, "doc_type": args.type})
 
 
@@ -225,9 +293,12 @@ def cmd_doc_task_get(args):
 
 
 def cmd_doc_task_set(args):
+    agent = require_auth(args)
     ok = upsert_task_doc(args.task_id, args.content, args.type)
     if not ok:
         err(f"Task '{args.task_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "task", args.task_id,
+              "doc_updated", f"doc_{args.type}")
     out({"updated": True, "doc_type": args.type})
 
 
@@ -236,7 +307,9 @@ def cmd_doc_task_set(args):
 # ---------------------------------------------------------------------------
 
 def cmd_comment_add(args):
+    agent = require_auth(args)
     result = add_comment(args.entity_type, args.entity_id, args.content, args.author)
+    log_audit(agent["name"], agent["master_name"], args.entity_type, args.entity_id, "comment_added")
     out(result, pretty=args.pretty)
 
 
@@ -246,10 +319,50 @@ def cmd_comment_list(args):
 
 
 def cmd_comment_delete(args):
+    agent = require_auth(args)
     ok = delete_comment(args.comment_id)
     if not ok:
         err(f"Comment '{args.comment_id}' not found")
+    log_audit(agent["name"], agent["master_name"], "comment", args.comment_id, "deleted")
     out({"deleted": True})
+
+
+# ---------------------------------------------------------------------------
+# Agent handlers
+# ---------------------------------------------------------------------------
+
+def cmd_agent_onboard(args):
+    result = onboard_agent(args.name, args.master)
+    if not result:
+        err(f"Agent '{args.name}' already exists. Use admin dashboard to reissue key.")
+    out({
+        "agent_id": result["id"],
+        "agent_name": result["name"],
+        "master_name": result["master_name"],
+        "api_key": result["api_key"],
+        "created_at": result["created_at"],
+    }, pretty=args.pretty)
+
+
+def cmd_agent_list(args):
+    agent = require_auth(args)
+    agents = list_agents()
+    out(agents, pretty=args.pretty)
+
+
+def cmd_agent_audit(args):
+    agent = require_auth(args)
+    entries = get_audit_log(args.entity_type, args.entity_id)
+    out(entries, pretty=args.pretty)
+
+
+def cmd_agent_audit_log(args):
+    agent = require_auth(args)
+    if args.agent_name:
+        entries = get_audit_log_by_agent(args.agent_name)
+    else:
+        entries = get_audit_log(args.entity_type, args.entity_id) if args.entity_type else []
+    out(entries, pretty=args.pretty)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--pretty", "-p", action="store_true",
                         help="Pretty-print JSON output (default: compact JSON for agents)")
+    parent.add_argument("--api-key", help="API key for authentication (or set TM_API_KEY env var)")
 
     parser = argparse.ArgumentParser(
         prog="tm",
@@ -401,6 +515,27 @@ def build_parser() -> argparse.ArgumentParser:
                                     help="Delete a comment")
     c_del.add_argument("comment_id", help="Comment ID")
 
+    # ---- agent ----
+    agent_p = sub.add_parser("agent", help="Agent management & audit")
+    agent_sub = agent_p.add_subparsers(dest="action", required=True)
+
+    a_onboard = agent_sub.add_parser("onboard", parents=[parent],
+                                      help="Register a new agent (no auth needed)")
+    a_onboard.add_argument("--name", required=True, help="Agent name")
+    a_onboard.add_argument("--master", required=True, help="Master/user name")
+
+    agent_sub.add_parser("list", parents=[parent], help="List registered agents")
+
+    a_audit = agent_sub.add_parser("audit", parents=[parent],
+                                    help="View audit log for a task or project")
+    a_audit.add_argument("entity_type", choices=["task", "project"],
+                         help="Entity type")
+    a_audit.add_argument("entity_id", help="Entity ID")
+
+    a_audit_log = agent_sub.add_parser("audit-log", parents=[parent],
+                                        help="View audit log by agent name")
+    a_audit_log.add_argument("--agent", dest="agent_name", help="Filter by agent name")
+
     return parser
 
 
@@ -436,6 +571,10 @@ def main():
         ("comment", "add"): cmd_comment_add,
         ("comment", "list"): cmd_comment_list,
         ("comment", "delete"): cmd_comment_delete,
+        ("agent", "onboard"): cmd_agent_onboard,
+        ("agent", "list"): cmd_agent_list,
+        ("agent", "audit"): cmd_agent_audit,
+        ("agent", "audit-log"): cmd_agent_audit_log,
     }
 
     # Doc subcommands need to key on (entity, doc_type, action)
