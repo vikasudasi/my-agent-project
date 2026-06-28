@@ -19,10 +19,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Migrate old doc tables to new format (remove old UNIQUE constraints, add doc_type)
-DROP TABLE IF EXISTS project_docs;
-DROP TABLE IF EXISTS task_docs;
-
+-- doc tables with doc_type
 CREATE TABLE IF NOT EXISTS project_docs (
     id          TEXT PRIMARY KEY,
     project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
