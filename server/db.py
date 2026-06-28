@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DB_DIR, "task_manager.db")
+DB_PATH = os.environ.get("TM_DB_PATH") or os.path.join(DB_DIR, "task_manager.db")
 SCHEMA_PATH = os.path.join(DB_DIR, "schema.sql")
 
 

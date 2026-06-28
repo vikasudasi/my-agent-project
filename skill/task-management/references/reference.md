@@ -13,7 +13,7 @@
 pip install mcp fastapi uvicorn jinja2 anyio
 ```
 
-### Running the MCP Server
+### Running the MCP Server (stdio)
 
 The MCP server communicates over **stdio** — it's designed to be launched as a subprocess by the MCP client.
 
@@ -21,6 +21,38 @@ The MCP server communicates over **stdio** — it's designed to be launched as a
 cd path/to/server
 python mcp_server.py
 ```
+
+### Running the MCP Server (HTTP/SSE)
+
+For remote agents or MCP clients that support SSE transport (instead of spawning a subprocess):
+
+```bash
+cd path/to/server
+python mcp_server.py --http --port 8000
+```
+
+Two endpoints are exposed:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /sse` | Client connects here to receive server-sent events |
+| `POST /messages?session_id=...` | Client posts JSON-RPC messages |
+
+### Running with Docker
+
+Build and run the all-in-one container (MCP HTTP/SSE server + SQLite):
+
+```bash
+# Build
+docker build -t task-manager .
+
+# Run with persistent volume
+docker run -d -p 8000:8000 -v tm-data:/data --name tm task-manager
+
+# Agents connect at http://<host>:8000/sse
+```
+
+See the repo root `Dockerfile` and `README.md` for full details.
 
 ### Running the Dashboard (Optional)
 
@@ -37,6 +69,7 @@ Then open http://localhost:8000 in a browser.
 
 To use this MCP server in Cursor, add to your `.cursor/mcp.json`:
 
+**stdio mode (local):**
 ```json
 {
   "mcpServers": {
@@ -48,14 +81,39 @@ To use this MCP server in Cursor, add to your `.cursor/mcp.json`:
 }
 ```
 
+**SSE mode (remote):**
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "type": "sse",
+      "url": "http://your-server:8000/sse"
+    }
+  }
+}
+```
+
 ### Configuring in Claude Desktop
 
+**stdio mode (local):**
 ```json
 {
   "mcpServers": {
     "task-manager": {
       "command": "python",
       "args": ["path/to/server/mcp_server.py"]
+    }
+  }
+}
+```
+
+**SSE mode (remote):**
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "type": "sse",
+      "url": "http://your-server:8000/sse"
     }
   }
 }

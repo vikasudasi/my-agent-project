@@ -122,6 +122,57 @@ Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 npx @modelcontextprotocol/inspector http://localhost:8000/sse
 ```
 
+## Docker (Server Deployment)
+
+Build and run a self-contained Docker image that serves the MCP server over HTTP/SSE,
+with the SQLite database persisted on a volume.
+
+```bash
+# Build the image
+docker build -t task-manager .
+
+# Run with persistent database volume
+docker run -d \
+  --name task-manager \
+  -p 8000:8000 \
+  -v tm-data:/data \
+  task-manager
+```
+
+Agents connect to `http://<your-server>:8000/sse`.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `TM_DB_PATH` | `/data/task_manager.db` | Path to the SQLite database file |
+
+### Docker Compose
+
+Create `docker-compose.yml`:
+
+```yaml
+version: "3.8"
+services:
+  task-manager:
+    build: .
+    container_name: task-manager
+    ports:
+      - "8000:8000"
+    volumes:
+      - tm-data:/data
+    restart: unless-stopped
+
+volumes:
+  tm-data:
+```
+
+Then:
+
+```bash
+docker compose up -d
+```
+
 ## Quick Start (Web Dashboard)
 
 ```bash
@@ -149,6 +200,8 @@ Open http://localhost:8000
 
 ```
 my-agent-project/
+├── Dockerfile                # Docker image for MCP server (HTTP/SSE)
+├── .dockerignore
 ├── server/
 │   ├── schema.sql              # Database schema
 │   ├── db.py                   # SQLite data access layer

@@ -13,10 +13,12 @@ Works **via CLI** (no server needed), **via MCP** (for IDE integration), or **vi
 | Mode | How to use | Server needed? |
 |---|---|---|
 | **CLI** | `python cli.py <command>` | **No** — direct SQLite access |
-| **MCP** | Via MCP client (Cursor, Claude Desktop) | Yes — `python mcp_server.py` |
+| **MCP (stdio)** | Via MCP client (Cursor, Claude Desktop) | Yes — `python mcp_server.py` |
+| **MCP (HTTP/SSE)** | Connect remote agents via SSE at `http://<host>:8000/sse` | Yes — `python mcp_server.py --http --port 8000` |
+| **Docker** | Deploy all-in-one container with persistent DB | Yes — `docker run -p 8000:8000 task-manager` |
 | **Web** | Browser at localhost:8000 | Yes — `cd dashboard && uvicorn app:app --reload --port 8000` |
 
-All modes share the same `server/task_manager.db` — you can switch freely.
+All modes share the same database (`task_manager.db`) — you can switch freely.
 
 ---
 

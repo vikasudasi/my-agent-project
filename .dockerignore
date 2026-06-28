@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.DS_Store
+**/.pytest_cache/
+**/.git/
+
+# Database (local copies — use volume in production)
+server/task_manager.db
+server/task_manager.db-shm
+server/task_manager.db-wal
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+.dockerignore
+Dockerfile
+
+# OS
+*.DS_Store
+Thumbs.db
