@@ -102,10 +102,27 @@ python cli.py project list --pretty
 
 | Action | CLI Command |
 |---|---|
-| Get project doc | `python cli.py doc project get <project_id>` |
-| Set project doc | `python cli.py doc project set <project_id> "<markdown>"` |
-| Get task doc | `python cli.py doc task get <task_id>` |
-| Set task doc | `python cli.py doc task set <task_id> "<markdown>"` |
+| Get project doc | `python cli.py doc project get <project_id> [--type spec\|progress\|closure]` |
+| Set project doc | `python cli.py doc project set <project_id> "<markdown>" [--type spec\|progress\|closure]` |
+| Get task doc | `python cli.py doc task get <task_id> [--type spec\|progress\|closure]` |
+| Set task doc | `python cli.py doc task set <task_id> "<markdown>" [--type spec\|progress\|closure]` |
+
+### Comments
+
+| Action | CLI Command |
+|---|---|
+| Add a comment | `python cli.py comment add <entity_type> <entity_id> "<text>" [--author "<name>"]` |
+| List comments | `python cli.py comment list <entity_type> <entity_id>` |
+| Delete comment | `python cli.py comment delete <comment_id>` |
+
+### Agent Management
+
+| Action | CLI Command |
+|---|---|
+| Register agent | `python cli.py agent onboard --name "<agent_name>" --master "<user_name>"` |
+| List agents | `python cli.py agent list` |
+| Audit log for entity | `python cli.py agent audit <entity_type> <entity_id>` |
+| Audit log by agent | `python cli.py agent audit-log --agent "<agent_name>"` |
 
 ### Database Utilities
 
@@ -127,8 +144,11 @@ The system uses SQLite. The database file is `server/task_manager.db`.
 
 - **projects** — `id`, `name`, `description`, `status`, timestamps
 - **tasks** — `id`, `project_id`, `parent_id`, `title`, `description`, `status`, `rank` (for ordering), timestamps
-- **project_docs** — `project_id`, `content` (markdown), `updated_at`
-- **task_docs** — `task_id`, `content` (markdown), `updated_at`
+- **project_docs** — `project_id`, `doc_type` (`spec`/`progress`/`closure`), `content` (markdown), `updated_at`
+- **task_docs** — `task_id`, `doc_type` (`spec`/`progress`/`closure`), `content` (markdown), `updated_at`
+- **comments** — `id`, `entity_type` (`task`/`project`), `entity_id`, `content`, `author`, `created_at`
+- **agents** — `id`, `name`, `master_name`, `api_key` (hashed), `created_at`
+- **audit_log** — `id`, `agent_name`, `master_name`, `entity_type`, `entity_id`, `action`, `field`, `old_value`, `new_value`, `created_at`
 
 ### Rank-based Ordering
 
@@ -292,8 +312,9 @@ All tools return JSON with this structure:
 
 **Parameters:**
 - `project_id` (string, required)
+- `type` (enum, optional) — `spec` (default), `progress`, or `closure`
 
-**Returns:** `{ "project_id": "...", "content": "# Markdown..." }`
+**Returns:** `{ "project_id": "...", "doc_type": "...", "content": "# Markdown..." }`
 
 ---
 
@@ -302,20 +323,91 @@ All tools return JSON with this structure:
 **Parameters:**
 - `project_id` (string, required)
 - `content` (string, required) — Full markdown content
+- `type` (enum, optional) — `spec` (default), `progress`, or `closure`
 
-**Returns:** `{ "updated": true }`
+**Returns:** `{ "updated": true, "doc_type": "..." }`
 
 #### `doc_task_get`
 
 **Parameters:**
 - `task_id` (string, required)
+- `type` (enum, optional) — `spec` (default), `progress`, or `closure`
 
-**Returns:** `{ "task_id": "...", "content": "# Markdown..." }`
+**Returns:** `{ "task_id": "...", "doc_type": "...", "content": "# Markdown..." }`
 
 #### `doc_task_update`
 
 **Parameters:**
 - `task_id` (string, required)
 - `content` (string, required) — Full markdown content
+- `type` (enum, optional) — `spec` (default), `progress`, or `closure`
 
-**Returns:** `{ "updated": true }`
+**Returns:** `{ "updated": true, "doc_type": "..." }`
+
+### Comment Tools
+
+#### `comment_add`
+
+**Parameters:**
+- `entity_type` (enum, required) — `project` or `task`
+- `entity_id` (string, required)
+- `content` (string, required) — Comment body
+- `author` (string, optional) — Author name; defaults to authenticated agent
+
+**Returns:** The created comment object.
+
+---
+
+#### `comment_list`
+
+**Parameters:**
+- `entity_type` (enum, required) — `project` or `task`
+- `entity_id` (string, required)
+
+**Returns:** Array of comment objects ordered by creation time.
+
+---
+
+#### `comment_delete`
+
+**Parameters:**
+- `comment_id` (string, required)
+
+**Returns:** `{ "deleted": true }`
+
+### Agent & Audit Tools
+
+#### `agent_onboard`
+
+**Parameters:**
+- `name` (string, required) — Agent name
+- `master` (string, required) — Master/user name
+
+**Returns:** `{ "agent_id": "...", "agent_name": "...", "master_name": "...", "api_key": "...", "created_at": "..." }`
+
+---
+
+#### `agent_list`
+
+**Parameters:** None (requires auth)
+
+**Returns:** Array of registered agents.
+
+---
+
+#### `agent_audit`
+
+**Parameters:**
+- `entity_type` (enum, required) — `task` or `project`
+- `entity_id` (string, required)
+
+**Returns:** Array of audit log entries for the entity.
+
+---
+
+#### `agent_audit_log`
+
+**Parameters:**
+- `agent_name` (string, optional) — Filter by agent name
+
+**Returns:** Array of audit log entries.
