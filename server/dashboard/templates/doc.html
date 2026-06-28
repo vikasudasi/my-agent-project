@@ -20,12 +20,28 @@
     </nav>
 
     <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Doc type tabs -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+            <div class="border-b border-gray-200">
+                <div class="flex">
+                    {% for dt in ['spec', 'progress', 'closure'] %}
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ dt }}"
+                       class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
+                        {{ dt }}
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Editor -->
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <form action="/{{ entity_type }}s/{{ entity_id }}/doc" method="POST">
+                <input type="hidden" name="doc_type" value="{{ doc_type }}">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-sm font-medium text-gray-700 capitalize">{{ doc_type }} document</h2>
+                </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        Documentation (Markdown)
-                    </label>
                     <textarea name="content" rows="20"
                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                               placeholder="Write markdown documentation here...">{{ content }}</textarea>
@@ -33,9 +49,9 @@
                 <div class="flex items-center gap-3">
                     <button type="submit"
                             class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-                        Save Documentation
+                        Save {{ doc_type }}
                     </button>
-                    <a href="/projects/{{ project_id }}"
+                    <a href="/{{ 'tasks/' + entity_id if entity_type == 'task' else 'projects/' + project_id }}"
                        class="text-sm text-gray-600 hover:text-gray-800">
                         Cancel
                     </a>
@@ -51,6 +67,31 @@
                 </div>
             </div>
         {% endif %}
+
+        <!-- Comments -->
+        <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
+            <form action="/comments/{{ entity_type }}/{{ entity_id }}" method="POST" class="mb-6">
+                <div class="flex gap-2">
+                    <input type="text" name="author" placeholder="Your name" class="w-32 px-2 py-1.5 text-sm border border-gray-300 rounded">
+                    <input type="text" name="content" placeholder="Add a comment..." required class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded">
+                    <button type="submit" class="px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700">Comment</button>
+                </div>
+            </form>
+            <div class="space-y-3">
+                {% for c in comments %}
+                <div class="border-l-2 border-gray-200 pl-3">
+                    <div class="flex items-center gap-2 text-xs text-gray-500">
+                        {% if c.author %}<span class="font-medium text-gray-700">{{ c.author }}</span>{% endif %}
+                        <span>{{ c.created_at }}</span>
+                    </div>
+                    <p class="text-sm text-gray-700 mt-1">{{ c.content }}</p>
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 italic">No comments yet.</p>
+                {% endfor %}
+            </div>
+        </div>
     </main>
 </body>
 </html>

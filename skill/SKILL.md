@@ -5,8 +5,8 @@ description: Manage projects, ordered tasks/subtasks, and documentation via CLI 
 
 # Task Management System
 
-Manage projects, ordered tasks (with subtasks), and documentation — all backed by SQLite.
-Works **via CLI** (zero setup) or **via MCP** (for IDE integration).
+Manage projects, ordered tasks (with subtasks), documentation (spec/progress/closure), and comments — all backed by SQLite.
+Works **via CLI** (zero setup), **via MCP** (for IDE integration), or **via Web Dashboard**.
 
 ## Access Modes
 
@@ -17,6 +17,82 @@ Works **via CLI** (zero setup) or **via MCP** (for IDE integration).
 | **Web** | Browser at localhost:8000 | Yes — `cd dashboard && uvicorn app:app --reload --port 8000` |
 
 All modes share the same `server/task_manager.db` — you can switch freely.
+
+---
+
+## 🧠 Agent Workflow Discipline
+
+This is the most important section. Follow these rules **every session** to keep the system useful.
+
+### Before Starting Any Work
+
+```bash
+# 1. See what exists
+python cli.py project list --pretty
+
+# 2. Check current project's task tree
+python cli.py task subtree <project_id> --pretty
+
+# 3. Read the spec doc for the task you plan to work on
+python cli.py doc task get <task_id> --type spec --pretty
+
+# 4. Check recent comments for context
+python cli.py comment list task <task_id> --pretty
+```
+
+### While Working
+
+| Trigger | Action |
+|---------|--------|
+| Starting a task | `task update <id> --status in_progress` |
+| Making progress | Write a progress doc: `doc task set <id> "..." --type progress` |
+| Hitting a blocker | Comment why: `comment add task <id> "Blocked because..."` |
+| Discovery/decision | Add a comment with the reasoning |
+| Changing plans | Update the **progress** doc, not the spec (spec is immutable plan) |
+| Completing a task | Write a closure doc, then mark complete |
+
+### After Completing a Task
+
+```bash
+# 1. Write closure doc (what was done, decisions, outcomes)
+python cli.py doc task set <task_id> "# Closure\n## Summary\n..." --type closure
+
+# 2. Mark completed
+python cli.py task update <task_id> --status completed
+
+# 3. Add a summary comment
+python cli.py comment add task <task_id> "Completed: delivered X, Y, Z" --author "agent"
+```
+
+### Documentation Lifecycle
+
+Every task and project has **three document slots**:
+
+| Doc Type | When to Write | Purpose | Example Content |
+|----------|--------------|---------|-----------------|
+| **spec** | At creation (plan) | What needs to be done, acceptance criteria | Objective, Scope, Acceptance Criteria checklist |
+| **progress** | During work | What's being done, what's working/pending | Current status, findings, blockers, decisions |
+| **closure** | On completion | Summary of what was delivered | What was built, key decisions, outcomes, metrics |
+
+**Rules:**
+- **Spec is written once** at creation. If requirements change, add a comment explaining why.
+- **Progress is updated** as you work. It can be overwritten each session with the latest state.
+- **Closure is written** once when the task is done. It should summarize the full delivery.
+- Each doc type is independent — writing progress doesn't overwrite the spec.
+
+### When to Write Comments vs Docs
+
+| Use Comments When | Use Docs When |
+|------------------|---------------|
+| Quick updates during work ("Found a bug, fixing") | Structured progress report ("Milestone 1 done") |
+| Questions or discussion | Final delivery summary |
+| Noting a blocker | Full design documentation |
+| Linking to external resources | Detailed acceptance criteria |
+| Status for other team members | Things that need to survive the project |
+
+Comments are **append-only and timestamped** — they form a timeline. Docs are **structured and replaceable** at each stage.
+
+---
 
 ## Quick Start (CLI — no server needed)
 
@@ -30,8 +106,11 @@ python cli.py db init
 python cli.py project create "Build Auth System" --desc "JWT-based auth"
 # → Returns project_id (printed to stderr so scripts can capture it)
 
-# Create ordered tasks
-python cli.py task create <project_id> "Research libraries"
+# Create ordered tasks with spec docs
+TASK_ID=$(python cli.py task create <project_id> "Research libraries" 2>&1 >/dev/null)
+python cli.py doc task set $TASK_ID "# Spec\n## Objective\n..." --type spec
+
+# Create tasks with progress tracking
 python cli.py task create <project_id> "Implement JWT" --after <task_id>
 
 # Check progress
@@ -43,6 +122,8 @@ Every command outputs **JSON** to stdout. The entity `id` is also printed to std
 ```bash
 PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
 ```
+
+---
 
 ## Available Commands
 
@@ -69,14 +150,26 @@ PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
 | Move | `python cli.py task move <task_id> --after <tid> --parent <tid>` |
 | Delete | `python cli.py task delete <task_id>` |
 
-### Documentation
+### Documentation (3 Types: spec / progress / closure)
 
 | Action | CLI command |
 |---|---|
-| Get project docs | `python cli.py doc project get <project_id>` |
-| Set project docs | `python cli.py doc project set <project_id> "# Markdown..."` |
-| Get task docs | `python cli.py doc task get <task_id>` |
-| Set task docs | `python cli.py doc task set <task_id> "# Markdown..."` |
+| Get project doc | `python cli.py doc project get <project_id> [--type spec]` |
+| Set project doc | `python cli.py doc project set <project_id> "..." [--type spec]` |
+| Get task doc | `python cli.py doc task get <task_id> [--type spec]` |
+| Set task doc | `python cli.py doc task set <task_id> "..." [--type spec]` |
+
+Default `--type` is `spec`. Use `--type progress` or `--type closure` for other stages.
+
+### Comments (Append-only Timeline)
+
+| Action | CLI command |
+|---|---|
+| Add comment | `python cli.py comment add <entity_type> <entity_id> "text" [--author "Name"]` |
+| List comments | `python cli.py comment list <entity_type> <entity_id>` |
+| Delete comment | `python cli.py comment delete <comment_id>` |
+
+`entity_type` is `project` or `task`.
 
 ### Database
 
@@ -85,34 +178,30 @@ PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
 | Initialize | `python cli.py db init` |
 | Show DB path | `python cli.py db path` |
 
+---
+
 ## Workflow Pattern (CLI)
 
-Here's a typical session for an AI agent:
+Here's a complete session following best practices:
 
 ```bash
 # 1. Start fresh — see what exists
 python cli.py project list
+python cli.py task subtree PROJECT_ID
 
-# 2. Create a project
-python cli.py project create "Authentication System" --desc "JWT-based auth"
+# 2. Pick a task and read its spec
+python cli.py task get TASK_ID
+python cli.py doc task get TASK_ID --type spec --pretty
 
-# 3. Create ordered top-level tasks
-python cli.py task create PROJECT_ID "Research auth libraries"
-python cli.py task create PROJECT_ID "Design database schema" --after TASK_1_ID
-python cli.py task create PROJECT_ID "Implement middleware" --after TASK_2_ID
+# 3. Mark as in_progress and add a progress note
+python cli.py task update TASK_ID --status in_progress
+python cli.py doc task set TASK_ID "## Current state\nResearching libraries..." --type progress
+python cli.py comment add task TASK_ID "Started work on this" --author "agent"
 
-# 4. Add subtasks to a task
-python cli.py task create PROJECT_ID "Compare Passport vs JWT" --parent TASK_1_ID
-
-# 5. Update status as work progresses
-python cli.py task update TASK_1_ID --status completed
-python cli.py task update TASK_3_ID --status in_progress
-
-# 6. Write documentation
-python cli.py doc project set PROJECT_ID "# Auth System\n## Design\nJWT with refresh tokens..."
-
-# 7. Check overall progress
-python cli.py project get PROJECT_ID
+# 4. Complete the task
+python cli.py doc task set TASK_ID "# Closure\nDelivered: compared 3 libraries..." --type closure
+python cli.py task update TASK_ID --status completed
+python cli.py comment add task TASK_ID "Completed: chose JWT library X" --author "agent"
 ```
 
 ## Task Ordering
@@ -140,7 +229,10 @@ Tasks use fractional indexing. When creating or moving:
 - **Capture IDs**: The entity ID is printed to stderr: `ID=$(python cli.py create ... 2>&1 >/dev/null)`
 - **Pretty output**: Add `--pretty` or `-p` for indented JSON (useful for human reading).
 - **Update as you go**: Keep statuses current — the web dashboard reflects changes in real-time.
-- **Use docs**: Accumulate design decisions, API references, and lessons learned in markdown docs.
+- **Three doc types**: Use `--type spec` for plans, `--type progress` for work logs, `--type closure` for summaries.
+- **Comments for timeline**: Use comments for quick updates, docs for structured information.
+- **Never overwrite a spec**: Write progress docs alongside it instead.
+- **Web dashboard**: Run the dashboard to see task trees, doc tabs, and comment feeds in a browser.
 
 For the full API reference including all parameters, see [reference.md](reference.md).
 For complete worked examples, see [examples.md](examples.md).

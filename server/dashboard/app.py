@@ -22,6 +22,7 @@ from db import (
     get_project,
     get_project_progress,
     get_task,
+    get_task_tree,
     list_tasks,
     get_task_subtree,
     update_task,
@@ -32,6 +33,8 @@ from db import (
     upsert_task_doc,
     create_project,
     create_task,
+    add_comment,
+    list_comments,
 )
 
 app = FastAPI(title="AI Task Manager Dashboard")
@@ -96,7 +99,10 @@ async def project_detail(request: Request, project_id: str):
         raise HTTPException(404, "Project not found")
 
     task_tree = get_task_subtree(project_id)
-    doc = get_project_doc(project_id)
+    doc_spec = get_project_doc(project_id, doc_type="spec")
+    doc_progress = get_project_doc(project_id, doc_type="progress")
+    doc_closure = get_project_doc(project_id, doc_type="closure")
+    comments = list_comments("project", project_id)
 
     return templates.TemplateResponse(
         "project.html",
@@ -104,7 +110,10 @@ async def project_detail(request: Request, project_id: str):
             "request": request,
             "project": project,
             "task_tree": task_tree,
-            "doc": doc,
+            "doc_spec": doc_spec,
+            "doc_progress": doc_progress,
+            "doc_closure": doc_closure,
+            "comments": comments,
             "status_color": _status_color,
             "statuses": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
         },
@@ -137,13 +146,79 @@ async def task_update_route(task_id: str, status: str = Form(...)):
     return RedirectResponse("/", status_code=303)
 
 
-@app.get("/tasks/{task_id}/doc", response_class=HTMLResponse)
-async def task_doc_page(request: Request, task_id: str):
+# ---------------------------------------------------------------------------
+# Task Detail Page
+# ---------------------------------------------------------------------------
+
+@app.get("/tasks/{task_id}", response_class=HTMLResponse)
+async def task_detail(request: Request, task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    doc = get_task_doc(task_id)
+
+    project = get_project_progress(task["project_id"])
+    full_tree = get_task_subtree(task["project_id"])
+    doc_spec = get_task_doc(task_id, doc_type="spec")
+    doc_progress = get_task_doc(task_id, doc_type="progress")
+    doc_closure = get_task_doc(task_id, doc_type="closure")
+    comments = list_comments("task", task_id)
+
+    # Build breadcrumb: walk up parent chain
+    breadcrumb = []
+    current = task
+    while current and current.get("parent_id"):
+        parent = get_task(current["parent_id"])
+        if parent:
+            breadcrumb.insert(0, parent)
+            current = parent
+        else:
+            break
+
+    return templates.TemplateResponse(
+        "task_detail.html",
+        {
+            "request": request,
+            "task": task,
+            "project": project,
+            "full_tree": full_tree,
+            "doc_spec": doc_spec,
+            "doc_progress": doc_progress,
+            "doc_closure": doc_closure,
+            "comments": comments,
+            "breadcrumb": breadcrumb,
+            "status_color": _status_color,
+            "statuses": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+@app.post("/comments/{entity_type}/{entity_id}")
+async def comment_add_route(entity_type: str, entity_id: str,
+                             content: str = Form(...),
+                             author: str = Form("")):
+    add_comment(entity_type, entity_id, content, author=author)
+    if entity_type == "project":
+        return RedirectResponse(f"/projects/{entity_id}", status_code=303)
+    return RedirectResponse(f"/tasks/{entity_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Doc pages (updated with doc_type support)
+# ---------------------------------------------------------------------------
+
+@app.get("/tasks/{task_id}/doc", response_class=HTMLResponse)
+async def task_doc_page(request: Request, task_id: str,
+                         doc_type: str = "spec"):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    doc = get_task_doc(task_id, doc_type=doc_type)
     project = get_project(task["project_id"])
+    comments = list_comments("task", task_id)
     return templates.TemplateResponse(
         "doc.html",
         {
@@ -153,25 +228,30 @@ async def task_doc_page(request: Request, task_id: str):
             "title": task["title"],
             "project_id": task["project_id"],
             "content": doc,
+            "doc_type": doc_type,
+            "comments": comments,
         },
     )
 
 
 @app.post("/tasks/{task_id}/doc")
-async def task_doc_update(task_id: str, content: str = Form(...)):
+async def task_doc_update(task_id: str, content: str = Form(...),
+                           doc_type: str = Form("spec")):
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    upsert_task_doc(task_id, content)
-    return RedirectResponse(f"/tasks/{task_id}/doc", status_code=303)
+    upsert_task_doc(task_id, content, doc_type=doc_type)
+    return RedirectResponse(f"/tasks/{task_id}/doc?type={doc_type}", status_code=303)
 
 
 @app.get("/projects/{project_id}/doc", response_class=HTMLResponse)
-async def project_doc_page(request: Request, project_id: str):
+async def project_doc_page(request: Request, project_id: str,
+                            doc_type: str = "spec"):
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    doc = get_project_doc(project_id)
+    doc = get_project_doc(project_id, doc_type=doc_type)
+    comments = list_comments("project", project_id)
     return templates.TemplateResponse(
         "doc.html",
         {
@@ -181,17 +261,20 @@ async def project_doc_page(request: Request, project_id: str):
             "title": project["name"],
             "project_id": project_id,
             "content": doc,
+            "doc_type": doc_type,
+            "comments": comments,
         },
     )
 
 
 @app.post("/projects/{project_id}/doc")
-async def project_doc_update(project_id: str, content: str = Form(...)):
+async def project_doc_update(project_id: str, content: str = Form(...),
+                              doc_type: str = Form("spec")):
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    upsert_project_doc(project_id, content)
-    return RedirectResponse(f"/projects/{project_id}/doc", status_code=303)
+    upsert_project_doc(project_id, content, doc_type=doc_type)
+    return RedirectResponse(f"/projects/{project_id}/doc?type={doc_type}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

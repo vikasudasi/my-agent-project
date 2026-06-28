@@ -44,6 +44,9 @@ from db import (
     upsert_project_doc,
     get_task_doc,
     upsert_task_doc,
+    add_comment,
+    list_comments,
+    delete_comment,
 )
 
 # ---------------------------------------------------------------------------
@@ -205,27 +208,48 @@ def cmd_task_delete(args):
 
 
 def cmd_doc_project_get(args):
-    content = get_project_doc(args.project_id)
-    out({"project_id": args.project_id, "content": content}, pretty=args.pretty)
+    content = get_project_doc(args.project_id, args.type)
+    out({"project_id": args.project_id, "doc_type": args.type, "content": content}, pretty=args.pretty)
 
 
 def cmd_doc_project_set(args):
-    ok = upsert_project_doc(args.project_id, args.content)
+    ok = upsert_project_doc(args.project_id, args.content, args.type)
     if not ok:
         err(f"Project '{args.project_id}' not found")
-    out({"updated": True})
+    out({"updated": True, "doc_type": args.type})
 
 
 def cmd_doc_task_get(args):
-    content = get_task_doc(args.task_id)
-    out({"task_id": args.task_id, "content": content}, pretty=args.pretty)
+    content = get_task_doc(args.task_id, args.type)
+    out({"task_id": args.task_id, "doc_type": args.type, "content": content}, pretty=args.pretty)
 
 
 def cmd_doc_task_set(args):
-    ok = upsert_task_doc(args.task_id, args.content)
+    ok = upsert_task_doc(args.task_id, args.content, args.type)
     if not ok:
         err(f"Task '{args.task_id}' not found")
-    out({"updated": True})
+    out({"updated": True, "doc_type": args.type})
+
+
+# ---------------------------------------------------------------------------
+# Comment handlers
+# ---------------------------------------------------------------------------
+
+def cmd_comment_add(args):
+    result = add_comment(args.entity_type, args.entity_id, args.content, args.author)
+    out(result, pretty=args.pretty)
+
+
+def cmd_comment_list(args):
+    result = list_comments(args.entity_type, args.entity_id)
+    out(result, pretty=args.pretty)
+
+
+def cmd_comment_delete(args):
+    ok = delete_comment(args.comment_id)
+    if not ok:
+        err(f"Comment '{args.comment_id}' not found")
+    out({"deleted": True})
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     t_del.add_argument("task_id", help="Task ID")
 
     # ---- doc ----
-    doc_p = sub.add_parser("doc", help="Manage documentation")
+    doc_p = sub.add_parser("doc", help="Manage documentation (spec/progress/closure)")
     doc_sub = doc_p.add_subparsers(dest="doc_type", required=True)
 
     # doc project
@@ -329,10 +353,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     doc_proj_get = doc_proj_sub.add_parser("get", parents=[parent], help="Get project docs")
     doc_proj_get.add_argument("project_id", help="Project ID")
+    doc_proj_get.add_argument("--type", dest="type",
+                              choices=["spec", "progress", "closure"], default="spec",
+                              help="Doc type: spec (default), progress, closure")
 
     doc_proj_set = doc_proj_sub.add_parser("set", parents=[parent], help="Set project docs (markdown)")
     doc_proj_set.add_argument("project_id", help="Project ID")
     doc_proj_set.add_argument("content", help="Markdown content (use quotes)")
+    doc_proj_set.add_argument("--type", dest="type",
+                              choices=["spec", "progress", "closure"], default="spec",
+                              help="Doc type: spec (default), progress, closure")
 
     # doc task
     doc_task_p = doc_sub.add_parser("task", help="Task documentation")
@@ -340,10 +370,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     doc_task_get = doc_task_sub.add_parser("get", parents=[parent], help="Get task docs")
     doc_task_get.add_argument("task_id", help="Task ID")
+    doc_task_get.add_argument("--type", dest="type",
+                              choices=["spec", "progress", "closure"], default="spec",
+                              help="Doc type: spec (default), progress, closure")
 
     doc_task_set = doc_task_sub.add_parser("set", parents=[parent], help="Set task docs (markdown)")
     doc_task_set.add_argument("task_id", help="Task ID")
     doc_task_set.add_argument("content", help="Markdown content (use quotes)")
+    doc_task_set.add_argument("--type", dest="type",
+                              choices=["spec", "progress", "closure"], default="spec",
+                              help="Doc type: spec (default), progress, closure")
+
+    # ---- comment ----
+    comment_p = sub.add_parser("comment", help="Add and view comments")
+    comment_sub = comment_p.add_subparsers(dest="action", required=True)
+
+    c_add = comment_sub.add_parser("add", parents=[parent], help="Add a comment")
+    c_add.add_argument("entity_type", choices=["project", "task"],
+                       help="Entity type")
+    c_add.add_argument("entity_id", help="Entity ID")
+    c_add.add_argument("content", help="Comment text")
+    c_add.add_argument("--author", default="", help="Comment author name")
+
+    c_list = comment_sub.add_parser("list", parents=[parent], help="List comments")
+    c_list.add_argument("entity_type", choices=["project", "task"],
+                        help="Entity type")
+    c_list.add_argument("entity_id", help="Entity ID")
+
+    c_del = comment_sub.add_parser("delete", parents=[parent],
+                                    help="Delete a comment")
+    c_del.add_argument("comment_id", help="Comment ID")
 
     return parser
 
@@ -377,6 +433,9 @@ def main():
         ("doc", "project", "set"): cmd_doc_project_set,
         ("doc", "task", "get"): cmd_doc_task_get,
         ("doc", "task", "set"): cmd_doc_task_set,
+        ("comment", "add"): cmd_comment_add,
+        ("comment", "list"): cmd_comment_list,
+        ("comment", "delete"): cmd_comment_delete,
     }
 
     # Doc subcommands need to key on (entity, doc_type, action)

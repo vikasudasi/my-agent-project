@@ -2,6 +2,13 @@
 server/task_manager.db
 server/task_manager.db-shm
 server/task_manager.db-wal
+server/task_manager_test.db
+server/task_manager_test.db-shm
+server/task_manager_test.db-wal
+
+# pytest cache
+.pytest_cache/
+server/.pytest_cache/
 
 # Python bytecode
 __pycache__/

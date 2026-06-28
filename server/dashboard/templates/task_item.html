@@ -20,9 +20,11 @@
 
             <!-- Title -->
             <div class="flex-1 min-w-0">
-                <span class="text-sm font-medium text-gray-900 {% if task.status == 'completed' %}line-through text-gray-400{% endif %}">
-                    {{ task.title }}
-                </span>
+                <a href="/tasks/{{ task.id }}" class="hover:underline">
+                    <span class="text-sm font-medium text-gray-900 {% if task.status == 'completed' %}line-through text-gray-400{% endif %}">
+                        {{ task.title }}
+                    </span>
+                </a>
                 {% if task.description %}
                     <p class="text-xs text-gray-500 truncate">{{ task.description }}</p>
                 {% endif %}

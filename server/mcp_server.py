@@ -33,6 +33,9 @@ from db import (
     upsert_project_doc,
     get_task_doc,
     upsert_task_doc,
+    add_comment,
+    list_comments,
+    delete_comment,
 )
 
 server = Server("task-manager", version="1.0.0",
@@ -249,48 +252,103 @@ async def list_tools() -> list[Tool]:
         # ---- Documentation ----
         Tool(
             name="doc_project_get",
-            description="Get the markdown documentation for a project.",
+            description="Get the markdown documentation for a project. Specify doc_type: spec (default), progress, or closure.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["spec", "progress", "closure"],
+                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
+                    },
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="doc_project_update",
-            description="Update the markdown documentation for a project.",
+            description="Update the markdown documentation for a project. Specify doc_type: spec (default), progress, or closure.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "content": {"type": "string", "description": "Markdown content"},
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["spec", "progress", "closure"],
+                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
+                    },
                 },
                 "required": ["project_id", "content"],
             },
         ),
         Tool(
             name="doc_task_get",
-            description="Get the markdown documentation for a task.",
+            description="Get the markdown documentation for a task. Specify doc_type: spec (default), progress, or closure.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string", "description": "Task ID"},
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["spec", "progress", "closure"],
+                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
+                    },
                 },
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="doc_task_update",
-            description="Update the markdown documentation for a task.",
+            description="Update the markdown documentation for a task. Specify doc_type: spec (default), progress, or closure.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string", "description": "Task ID"},
                     "content": {"type": "string", "description": "Markdown content"},
+                    "doc_type": {
+                        "type": "string",
+                        "enum": ["spec", "progress", "closure"],
+                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
+                    },
                 },
                 "required": ["task_id", "content"],
+            },
+        ),
+        # ---- Comments ----
+        Tool(
+            name="comment_add",
+            description="Add a comment to a project or task. Comments are append-only and timestamped.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["project", "task"],
+                        "description": "Entity type to comment on",
+                    },
+                    "entity_id": {"type": "string", "description": "Entity ID"},
+                    "content": {"type": "string", "description": "Comment text"},
+                    "author": {"type": "string", "description": "Optional author name"},
+                },
+                "required": ["entity_type", "entity_id", "content"],
+            },
+        ),
+        Tool(
+            name="comment_list",
+            description="List all comments for a project or task, ordered by creation time.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["project", "task"],
+                        "description": "Entity type",
+                    },
+                    "entity_id": {"type": "string", "description": "Entity ID"},
+                },
+                "required": ["entity_type", "entity_id"],
             },
         ),
     ]
@@ -397,24 +455,63 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _ok({"deleted": True})
 
         elif name == "doc_project_get":
-            content = get_project_doc(arguments["project_id"])
-            return _ok({"project_id": arguments["project_id"], "content": content})
+            content = get_project_doc(
+                arguments["project_id"],
+                doc_type=arguments.get("doc_type", "spec"),
+            )
+            return _ok({
+                "project_id": arguments["project_id"],
+                "doc_type": arguments.get("doc_type", "spec"),
+                "content": content,
+            })
 
         elif name == "doc_project_update":
-            ok = upsert_project_doc(arguments["project_id"], arguments["content"])
+            ok = upsert_project_doc(
+                arguments["project_id"],
+                arguments["content"],
+                doc_type=arguments.get("doc_type", "spec"),
+            )
             if not ok:
                 return _err(f"Project '{arguments['project_id']}' not found")
-            return _ok({"updated": True})
+            return _ok({"updated": True, "doc_type": arguments.get("doc_type", "spec")})
 
         elif name == "doc_task_get":
-            content = get_task_doc(arguments["task_id"])
-            return _ok({"task_id": arguments["task_id"], "content": content})
+            content = get_task_doc(
+                arguments["task_id"],
+                doc_type=arguments.get("doc_type", "spec"),
+            )
+            return _ok({
+                "task_id": arguments["task_id"],
+                "doc_type": arguments.get("doc_type", "spec"),
+                "content": content,
+            })
 
         elif name == "doc_task_update":
-            ok = upsert_task_doc(arguments["task_id"], arguments["content"])
+            ok = upsert_task_doc(
+                arguments["task_id"],
+                arguments["content"],
+                doc_type=arguments.get("doc_type", "spec"),
+            )
             if not ok:
                 return _err(f"Task '{arguments['task_id']}' not found")
-            return _ok({"updated": True})
+            return _ok({"updated": True, "doc_type": arguments.get("doc_type", "spec")})
+
+        # ---- Comments ----
+        elif name == "comment_add":
+            result = add_comment(
+                arguments["entity_type"],
+                arguments["entity_id"],
+                arguments["content"],
+                author=arguments.get("author", ""),
+            )
+            return _ok(result)
+
+        elif name == "comment_list":
+            result = list_comments(
+                arguments["entity_type"],
+                arguments["entity_id"],
+            )
+            return _ok(result)
 
         else:
             return _err(f"Unknown tool: {name}")

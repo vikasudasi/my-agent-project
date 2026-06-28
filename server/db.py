@@ -324,15 +324,16 @@ def delete_task(task_id: str) -> bool:
 # Documentation
 # ---------------------------------------------------------------------------
 
-def get_project_doc(project_id: str) -> Optional[str]:
+def get_project_doc(project_id: str, doc_type: str = "spec") -> Optional[str]:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT content FROM project_docs WHERE project_id = ?", (project_id,)
+            "SELECT content FROM project_docs WHERE project_id = ? AND doc_type = ?",
+            (project_id, doc_type),
         ).fetchone()
     return row["content"] if row else ""
 
 
-def upsert_project_doc(project_id: str, content: str) -> bool:
+def upsert_project_doc(project_id: str, content: str, doc_type: str = "spec") -> bool:
     with get_connection() as conn:
         proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not proj:
@@ -341,22 +342,23 @@ def upsert_project_doc(project_id: str, content: str) -> bool:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         doc_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO project_docs (id, project_id, content, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(project_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-            (doc_id, project_id, content, now),
+            "INSERT INTO project_docs (id, project_id, doc_type, content, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(project_id, doc_type) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            (doc_id, project_id, doc_type, content, now),
         )
     return True
 
 
-def get_task_doc(task_id: str) -> Optional[str]:
+def get_task_doc(task_id: str, doc_type: str = "spec") -> Optional[str]:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT content FROM task_docs WHERE task_id = ?", (task_id,)
+            "SELECT content FROM task_docs WHERE task_id = ? AND doc_type = ?",
+            (task_id, doc_type),
         ).fetchone()
     return row["content"] if row else ""
 
 
-def upsert_task_doc(task_id: str, content: str) -> bool:
+def upsert_task_doc(task_id: str, content: str, doc_type: str = "spec") -> bool:
     with get_connection() as conn:
         t = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not t:
@@ -365,8 +367,43 @@ def upsert_task_doc(task_id: str, content: str) -> bool:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         doc_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO task_docs (id, task_id, content, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(task_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-            (doc_id, task_id, content, now),
+            "INSERT INTO task_docs (id, task_id, doc_type, content, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id, doc_type) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            (doc_id, task_id, doc_type, content, now),
         )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+def add_comment(entity_type: str, entity_id: str, content: str,
+                author: str = "") -> dict:
+    cid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO comments (id, entity_type, entity_id, author, content, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, entity_type, entity_id, author, content, now),
+        )
+        row = conn.execute("SELECT * FROM comments WHERE id = ?", (cid,)).fetchone()
+    return dict(row)
+
+
+def list_comments(entity_type: str, entity_id: str) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM comments WHERE entity_type = ? AND entity_id = ? "
+            "ORDER BY created_at ASC",
+            (entity_type, entity_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_comment(comment_id: str) -> bool:
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+        deleted = cur.rowcount > 0
+    return deleted
