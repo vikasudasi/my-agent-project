@@ -13,7 +13,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, Request, Form, HTTPException, Response
+from fastapi import FastAPI, Request, Form, HTTPException, Response, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -115,7 +115,7 @@ async def auth_middleware(request: Request, call_next):
     # Allow login, static files, and doc pages without auth
     public_paths = {"/login", "/static/"}
     path = request.url.path
-    if any(path.startswith(p) for p in public_paths):
+    if any(path.startswith(p) for p in public_paths) or "/doc" in path:
         return await call_next(request)
 
     user = _get_session_user(request)
@@ -311,7 +311,8 @@ async def comment_add_route(entity_type: str, entity_id: str,
 
 @app.get("/tasks/{task_id}/doc", response_class=HTMLResponse)
 async def task_doc_page(request: Request, task_id: str,
-                         doc_type: str = "spec"):
+                         type: str = Query("spec")):
+    doc_type = type
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
@@ -345,7 +346,8 @@ async def task_doc_update(task_id: str, content: str = Form(...),
 
 @app.get("/projects/{project_id}/doc", response_class=HTMLResponse)
 async def project_doc_page(request: Request, project_id: str,
-                            doc_type: str = "spec"):
+                            type: str = Query("spec")):
+    doc_type = type
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
