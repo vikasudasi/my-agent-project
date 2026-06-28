@@ -1,6 +1,7 @@
 import sqlite3
 import uuid
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -9,21 +10,29 @@ DB_PATH = os.path.join(DB_DIR, "task_manager.db")
 SCHEMA_PATH = os.path.join(DB_DIR, "schema.sql")
 
 
-def get_connection() -> sqlite3.Connection:
+@contextmanager
+def get_connection():
+    """Context manager for SQLite connections. Auto-commits on success,
+    rolls back on exception, and always closes the connection."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
     with open(SCHEMA_PATH) as f:
         schema = f.read()
-    conn = get_connection()
-    conn.executescript(schema)
-    conn.commit()
-    conn.close()
+    with get_connection() as conn:
+        conn.executescript(schema)
 
 
 # ---------------------------------------------------------------------------
@@ -33,88 +42,77 @@ def init_db():
 def create_project(name: str, description: str = "") -> dict:
     pid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (pid, name, description, now, now),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
-    conn.close()
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, name, description, now, now),
+        )
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
     return dict(row)
 
 
 def list_projects() -> list[dict]:
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM projects ORDER BY created_at DESC"
-    ).fetchall()
-    conn.close()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM projects ORDER BY created_at DESC"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_project(project_id: str) -> Optional[dict]:
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-    conn.close()
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     return dict(row) if row else None
 
 
 def update_project(project_id: str, name: Optional[str] = None,
                    description: Optional[str] = None,
                    status: Optional[str] = None) -> Optional[dict]:
-    conn = get_connection()
-    existing = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not existing:
-        conn.close()
-        return None
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not existing:
+            return None
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    fields = {"updated_at": now}
-    if name is not None:
-        fields["name"] = name
-    if description is not None:
-        fields["description"] = description
-    if status is not None:
-        fields["status"] = status
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        fields = {"updated_at": now}
+        if name is not None:
+            fields["name"] = name
+        if description is not None:
+            fields["description"] = description
+        if status is not None:
+            fields["status"] = status
 
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [project_id]
-    conn.execute(f"UPDATE projects SET {set_clause} WHERE id = ?", values)
-    conn.commit()
-    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-    conn.close()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [project_id]
+        conn.execute(f"UPDATE projects SET {set_clause} WHERE id = ?", values)
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     return dict(row)
 
 
 def delete_project(project_id: str) -> bool:
-    conn = get_connection()
-    cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    conn.commit()
-    deleted = cur.rowcount > 0
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        deleted = cur.rowcount > 0
     return deleted
 
 
 def get_project_progress(project_id: str) -> Optional[dict]:
-    conn = get_connection()
-    proj = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not proj:
-        conn.close()
-        return None
+    with get_connection() as conn:
+        proj = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            return None
 
-    total = conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE project_id = ?", (project_id,)
-    ).fetchone()[0]
-    completed = conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'completed'",
-        (project_id,),
-    ).fetchone()[0]
-    by_status = conn.execute(
-        "SELECT status, COUNT(*) as cnt FROM tasks WHERE project_id = ? GROUP BY status",
-        (project_id,),
-    ).fetchall()
-    conn.close()
+        total = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        completed = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'completed'",
+            (project_id,),
+        ).fetchone()[0]
+        by_status = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE project_id = ? GROUP BY status",
+            (project_id,),
+        ).fetchall()
 
     return {
         **dict(proj),
@@ -174,83 +172,75 @@ def _rank_after(conn: sqlite3.Connection, project_id: str,
 def create_task(project_id: str, title: str, description: str = "",
                 parent_id: Optional[str] = None,
                 after_task_id: Optional[str] = None) -> Optional[dict]:
-    conn = get_connection()
-    proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not proj:
-        conn.close()
-        return None
+    with get_connection() as conn:
+        proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            return None
 
-    tid = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        tid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    if after_task_id:
-        rank = _rank_after(conn, project_id, after_task_id, parent_id)
-    else:
-        rank = _next_rank(conn, project_id, parent_id)
+        if after_task_id:
+            rank = _rank_after(conn, project_id, after_task_id, parent_id)
+        else:
+            rank = _next_rank(conn, project_id, parent_id)
 
-    conn.execute(
-        "INSERT INTO tasks (id, project_id, parent_id, title, description, rank, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (tid, project_id, parent_id, title, description, rank, now, now),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
-    conn.close()
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, parent_id, title, description, rank, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tid, project_id, parent_id, title, description, rank, now, now),
+        )
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
     return dict(row)
 
 
 def list_tasks(project_id: str, status: Optional[str] = None,
                parent_id: Optional[str] = None) -> list[dict]:
-    conn = get_connection()
-    query = "SELECT * FROM tasks WHERE project_id = ?"
-    params: list = [project_id]
+    with get_connection() as conn:
+        query = "SELECT * FROM tasks WHERE project_id = ?"
+        params: list = [project_id]
 
-    if status:
-        query += " AND status = ?"
-        params.append(status)
-    if parent_id is not None:
-        query += " AND parent_id = ?"
-        params.append(parent_id)
-    else:
-        query += " AND parent_id IS NULL"
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if parent_id is not None:
+            query += " AND parent_id = ?"
+            params.append(parent_id)
+        else:
+            query += " AND parent_id IS NULL"
 
-    query += " ORDER BY rank ASC"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
+        query += " ORDER BY rank ASC"
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_task(task_id: str) -> Optional[dict]:
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    conn.close()
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return dict(row) if row else None
 
 
 def get_task_tree(task_id: str) -> Optional[dict]:
     """Get a task with its full subtree of nested children."""
-    conn = get_connection()
-    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if not task:
-        conn.close()
-        return None
+    with get_connection() as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task:
+            return None
 
-    task_dict = dict(task)
-    children = conn.execute(
-        "SELECT * FROM tasks WHERE parent_id = ? ORDER BY rank ASC", (task_id,)
-    ).fetchall()
-    task_dict["children"] = [dict(c) for c in children]
-    conn.close()
+        task_dict = dict(task)
+        children = conn.execute(
+            "SELECT * FROM tasks WHERE parent_id = ? ORDER BY rank ASC", (task_id,)
+        ).fetchall()
+        task_dict["children"] = [dict(c) for c in children]
     return task_dict
 
 
 def get_task_subtree(project_id: str) -> list[dict]:
     """Get hierarchical task tree for an entire project."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE project_id = ? ORDER BY rank ASC", (project_id,)
-    ).fetchall()
-    conn.close()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE project_id = ? ORDER BY rank ASC", (project_id,)
+        ).fetchall()
 
     tasks_by_id: dict[str, dict] = {}
     roots: list[dict] = []
@@ -272,62 +262,61 @@ def get_task_subtree(project_id: str) -> list[dict]:
 def update_task(task_id: str, title: Optional[str] = None,
                 description: Optional[str] = None,
                 status: Optional[str] = None) -> Optional[dict]:
-    conn = get_connection()
-    existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if not existing:
-        conn.close()
-        return None
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not existing:
+            return None
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    fields = {"updated_at": now}
-    if title is not None:
-        fields["title"] = title
-    if description is not None:
-        fields["description"] = description
-    if status is not None:
-        fields["status"] = status
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        fields = {"updated_at": now}
+        if title is not None:
+            fields["title"] = title
+        if description is not None:
+            fields["description"] = description
+        if status is not None:
+            fields["status"] = status
 
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [task_id]
-    conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
-    conn.commit()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    conn.close()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [task_id]
+        conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return dict(row)
 
 
+# Sentinel to distinguish "not provided" from "explicitly None"
+_UNSET = "___UNSET___"
+
+
 def move_task(task_id: str, after_task_id: Optional[str] = None,
-              parent_id: Optional[str] = None) -> Optional[dict]:
-    conn = get_connection()
-    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if not task:
-        conn.close()
-        return None
+              parent_id: Optional[str] = _UNSET) -> Optional[dict]:
+    with get_connection() as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task:
+            return None
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    new_parent = parent_id if parent_id is not None else task["parent_id"]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if parent_id is _UNSET:
+            new_parent = task["parent_id"]
+        else:
+            new_parent = parent_id  # None means "make root level"
 
-    if after_task_id:
-        rank = _rank_after(conn, task["project_id"], after_task_id, new_parent)
-    else:
-        rank = _next_rank(conn, task["project_id"], new_parent)
+        if after_task_id:
+            rank = _rank_after(conn, task["project_id"], after_task_id, new_parent)
+        else:
+            rank = _next_rank(conn, task["project_id"], new_parent)
 
-    conn.execute(
-        "UPDATE tasks SET parent_id = ?, rank = ?, updated_at = ? WHERE id = ?",
-        (new_parent, rank, now, task_id),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    conn.close()
+        conn.execute(
+            "UPDATE tasks SET parent_id = ?, rank = ?, updated_at = ? WHERE id = ?",
+            (new_parent, rank, now, task_id),
+        )
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return dict(row)
 
 
 def delete_task(task_id: str) -> bool:
-    conn = get_connection()
-    cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    conn.commit()
-    deleted = cur.rowcount > 0
-    conn.close()
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        deleted = cur.rowcount > 0
     return deleted
 
 
@@ -336,56 +325,48 @@ def delete_task(task_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_project_doc(project_id: str) -> Optional[str]:
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT content FROM project_docs WHERE project_id = ?", (project_id,)
-    ).fetchone()
-    conn.close()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT content FROM project_docs WHERE project_id = ?", (project_id,)
+        ).fetchone()
     return row["content"] if row else ""
 
 
 def upsert_project_doc(project_id: str, content: str) -> bool:
-    conn = get_connection()
-    proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not proj:
-        conn.close()
-        return False
+    with get_connection() as conn:
+        proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            return False
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    doc_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO project_docs (id, project_id, content, updated_at) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(project_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-        (doc_id, project_id, content, now),
-    )
-    conn.commit()
-    conn.close()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        doc_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO project_docs (id, project_id, content, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(project_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            (doc_id, project_id, content, now),
+        )
     return True
 
 
 def get_task_doc(task_id: str) -> Optional[str]:
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT content FROM task_docs WHERE task_id = ?", (task_id,)
-    ).fetchone()
-    conn.close()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT content FROM task_docs WHERE task_id = ?", (task_id,)
+        ).fetchone()
     return row["content"] if row else ""
 
 
 def upsert_task_doc(task_id: str, content: str) -> bool:
-    conn = get_connection()
-    t = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if not t:
-        conn.close()
-        return False
+    with get_connection() as conn:
+        t = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not t:
+            return False
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    doc_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO task_docs (id, task_id, content, updated_at) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(task_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-        (doc_id, task_id, content, now),
-    )
-    conn.commit()
-    conn.close()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        doc_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO task_docs (id, task_id, content, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(task_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            (doc_id, task_id, content, now),
+        )
     return True
