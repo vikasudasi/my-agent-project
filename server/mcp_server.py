@@ -6,12 +6,16 @@ All backed by SQLite, accessible by any MCP-compatible AI agent.
 """
 
 import json
+import logging
 import sys
 from typing import Any
 
+import anyio
+from anyio.abc import TaskStatus
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import Tool, TextContent, CallToolResult
 
 from db import (
@@ -47,6 +51,8 @@ from db import (
 server = Server("task-manager", version="1.0.0",
                 instructions="Task Management System for AI Agents. "
                              "Manage projects, ordered tasks/subtasks, and documentation.")
+
+logger = logging.getLogger("mcp-server")
 
 
 # API key property used by all mutation tools
@@ -698,7 +704,7 @@ Or configure any MCP-compatible client with the SSE URL.
 
 
 def create_starlette_app() -> "Starlette":
-    """Build the Starlette ASGI app with SSE transport and CORS."""
+    """Build the Starlette ASGI app with SSE + Streamable HTTP transports and CORS."""
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.cors import CORSMiddleware
@@ -721,6 +727,37 @@ def create_starlette_app() -> "Starlette":
             request.scope, request.receive, request._send
         )
 
+    async def handle_mcp_streamable(request):
+        """Handle a single MCP request via Streamable HTTP (JSON-only, stateless).
+        
+        Each POST is self-contained — initialize handshake, tool call, and
+        response all happen within one request/response cycle.
+        """
+        http_transport = StreamableHTTPServerTransport(
+            mcp_session_id=None,
+            is_json_response_enabled=True,
+        )
+
+        async def run_server(*, task_status: TaskStatus[None]):
+            async with http_transport.connect() as (read_stream, write_stream):
+                task_status.started()
+                try:
+                    await server.run(
+                        read_stream,
+                        write_stream,
+                        server.create_initialization_options(),
+                        stateless=True,
+                    )
+                except Exception:
+                    logger.exception("Streamable HTTP session crashed")
+
+        async with anyio.create_task_group() as tg:
+            await tg.start(run_server)
+            await http_transport.handle_request(
+                request.scope, request.receive, request._send
+            )
+            await http_transport.terminate()
+
     return Starlette(
         debug=False,
         middleware=[
@@ -734,12 +771,18 @@ def create_starlette_app() -> "Starlette":
         routes=[
             Route("/sse", endpoint=handle_sse),
             Route("/messages", endpoint=handle_messages, methods=["POST"]),
+            Route("/mcp", endpoint=handle_mcp_streamable, methods=["POST"]),
         ],
     )
 
 
 async def main_http(host: str = "0.0.0.0", port: int = 8000):
-    """Run the MCP server over HTTP with SSE transport."""
+    """Run the MCP server over HTTP.
+    
+    Exposes:
+      GET  /sse, POST /messages  — SSE transport
+      POST /mcp                  — Streamable HTTP (stateless, JSON-only)
+    """
     import uvicorn
 
     init_db()
@@ -758,11 +801,12 @@ if __name__ == "__main__":
     import anyio
 
     parser = argparse.ArgumentParser(
-        description="Task Manager MCP Server — stdio or HTTP/SSE"
+        description="Task Manager MCP Server — stdio, HTTP/SSE, or Streamable HTTP"
     )
     parser.add_argument(
         "--http", action="store_true",
-        help="Run over HTTP/SSE instead of stdio"
+        help="Run over HTTP instead of stdio. "
+             "Exposes: GET /sse, POST /messages (SSE), POST /mcp (Streamable HTTP)"
     )
     parser.add_argument(
         "--host", default="0.0.0.0",
