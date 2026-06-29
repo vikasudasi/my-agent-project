@@ -1,50 +1,139 @@
 # AI Task Management System
 
-Three ways to use it — **CLI** (simplest, no server), **MCP** (IDE integration), or **Web Dashboard** (for humans).
+A lightweight task-management platform built for **AI agents and humans**. Track projects, ordered tasks and subtasks, markdown documentation, comments, and a full audit trail — all backed by a single SQLite database.
+
+Use it three ways: **CLI** (zero dependencies), **MCP** (IDE agents), or **Web Dashboard** (visual oversight). Every interface reads and writes the same data, so agents and people can collaborate in real time.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quick Start — CLI](#quick-start--cli)
+- [Quick Start — MCP](#quick-start--mcp)
+- [Quick Start — Web Dashboard](#quick-start--web-dashboard)
+- [Docker Deployment](#docker-deployment)
+- [Documentation Model](#documentation-model)
+- [Project Structure](#project-structure)
+- [CLI Reference](#cli-reference)
+- [MCP Tools](#mcp-tools)
+- [Agent Skill](#agent-skill)
+- [Development](#development)
+- [License](#license)
+
+---
+
+## Overview
+
+| Interface | Best for | Server required |
+|-----------|----------|-----------------|
+| **CLI** | Scripts, terminals, quick automation | No |
+| **MCP** | Cursor, Claude Desktop, remote agents | Yes |
+| **Dashboard** | Humans reviewing progress and docs | Yes |
+
+All interfaces share one database (`task_manager.db`). Create a project in the CLI, let an agent update tasks over MCP, and review the result in the browser — no sync step needed.
+
+---
+
+## Features
+
+### Core
+
+- **Projects** — Create, update, archive, and track completion progress
+- **Ordered tasks** — Root tasks and nested subtasks with fractional-index ordering
+- **Six task statuses** — `pending`, `in_progress`, `completed`, `blocked`, `failed`, `cancelled`
+- **Markdown docs** — Three doc types per project and task: `spec`, `progress`, `closure`
+- **Comments** — Timestamped, append-only notes on projects and tasks
+
+### Agent & governance
+
+- **Agent onboarding** — Register agents with scoped API keys
+- **Audit log** — Every mutation recorded with agent identity and field-level diffs
+- **Portable skill** — Drop-in skill folder for Cursor and other agent runtimes
+
+### Web Dashboard
+
+- **Home** — Project grid, search and filters, recent activity feed, onboarded agents
+- **Project view** — Task tree with collapsible subtasks, search, and status filters
+- **Documentation hub** — Read-only view of all project and task docs, grouped by task tree
+- **Markdown rendering** — Client-side preview via marked.js with sanitized HTML
+- **Audit pages** — Per-project and per-agent activity history
+- **Archive** — Soft-delete projects (restore anytime)
+
+### Interfaces
+
+- **CLI** — Pure Python, argparse, JSON output (add `--pretty` for humans)
+- **MCP** — 22 tools over stdio or HTTP/SSE
+- **Dashboard** — FastAPI + Jinja2 + Tailwind
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph clients [Clients]
+        CLI["CLI\npython cli.py"]
+        MCP["MCP Server\nmcp_server.py"]
+        WEB["Web Dashboard\nFastAPI :8000"]
+    end
+
+    subgraph data [Data Layer]
+        DB[("SQLite\ntask_manager.db")]
+    end
+
+    CLI --> DB
+    MCP --> DB
+    WEB --> DB
+```
+
+**Doc types** flow through every interface:
 
 ```
-                    ┌──────────────────────────────┐
-                    │        Three Access Modes      │
-                    │                                │
-  CLI              │  MCP (Cursor/Claude)          │  Web Dashboard
-  python cli.py    │  python mcp_server.py          │  localhost:8000
-  (no server!)     │  (server required)             │  (server required)
-                    │                                │
-                    └──────────┬───────────────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │     SQLite DB         │
-                    │  task_manager.db      │
-                    └──────────────────────┘
+Project
+├── spec      → plan and acceptance criteria
+├── progress  → work log (never overwrites spec)
+└── closure   → summary when done
+
+Task (each)
+├── spec / progress / closure
+└── subtasks (ordered, nested)
 ```
 
-**All modes share the same database** — you can use the CLI from a terminal, check the dashboard in a browser, and let an IDE agent use MCP, all at the same time.
+---
 
-## Quick Start (CLI — Zero Setup)
+## Quick Start — CLI
 
-The CLI needs **zero dependencies** — just Python 3.10+:
+Requires **Python 3.10+**. No pip install needed.
 
 ```bash
 cd server
 
-# Initialize the database (first time only)
+# Initialize the database (first run only)
 python cli.py db init
 
-# Create a project
-python cli.py project create "Build Auth System" --desc "JWT-based auth"
+# Onboard an agent (required before mutations)
+python cli.py agent onboard --name my-agent --master "Your Name"
 
-# Create tasks
-python cli.py task create PROJ_ID "Research"
-python cli.py task create PROJ_ID "Implement" --after TASK_ID
+# Create a project and tasks
+python cli.py project create "Build Auth System" --desc "JWT-based authentication"
+python cli.py task create <PROJECT_ID> "Research options"
+python cli.py task create <PROJECT_ID> "Implement JWT" --after <TASK_ID>
+
+# Attach a spec doc to a task
+python cli.py doc task set <TASK_ID> "# Spec\n## Objective\n..." --type spec
 
 # Check progress
-python cli.py project get PROJ_ID --pretty
+python cli.py project get <PROJECT_ID> --pretty
 ```
 
-Every command outputs **JSON** (agent-friendly). Add `--pretty` for human reading.
+Every command emits **JSON** to stdout. Pass `--pretty` for formatted output.
 
-## Quick Start (MCP — for IDE agents)
+---
+
+## Quick Start — MCP
 
 ### 1. Install dependencies
 
@@ -53,57 +142,41 @@ cd server
 pip install -r requirements.txt
 ```
 
-### 2. Start the MCP server
+### 2. Start the server
+
+**Stdio** (local subprocess — Cursor, Claude Desktop):
 
 ```bash
 python mcp_server.py
 ```
 
-### 3. Configure your MCP client
-
-**Cursor** — add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "task-manager": {
-      "command": "python",
-      "args": ["path/to/server/mcp_server.py"]
-    }
-  }
-}
-```
-
-**Claude Desktop** — add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "task-manager": {
-      "command": "python",
-      "args": ["path/to/server/mcp_server.py"]
-    }
-  }
-}
-```
-
-### HTTP/SSE Transport
-
-The MCP server also supports **HTTP with SSE transport** for clients that can't run a local subprocess (e.g. remote agents, web-based MCP clients):
+**HTTP/SSE** (remote agents, web clients):
 
 ```bash
-cd server
 python mcp_server.py --http --port 8000
 ```
 
-Two endpoints are exposed:
-
 | Endpoint | Purpose |
-|---|---|
-| `GET /sse` | Client connects here to receive server-sent events |
-| `POST /messages?session_id=...` | Client posts JSON-RPC messages |
+|----------|---------|
+| `GET /sse` | Server-sent events stream |
+| `POST /messages?session_id=…` | JSON-RPC messages |
 
-**Client config** (for MCP clients that support SSE):
+### 3. Configure your client
+
+**Cursor** — `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "python",
+      "args": ["/absolute/path/to/server/mcp_server.py"]
+    }
+  }
+}
+```
+
+**SSE client**:
 
 ```json
 {
@@ -122,16 +195,49 @@ Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 npx @modelcontextprotocol/inspector http://localhost:8000/sse
 ```
 
-## Docker (Server Deployment)
+> **Tip:** The MCP server and dashboard both default to port `8000`. Run one on a different port if you need both simultaneously, e.g. `uvicorn app:app --port 8080`.
 
-Build and run a self-contained Docker image that serves the MCP server over HTTP/SSE,
-with the SQLite database persisted on a volume.
+---
+
+## Quick Start — Web Dashboard
 
 ```bash
-# Build the image
+cd server
+pip install -r requirements.txt
+python dashboard/app.py
+```
+
+Open **http://localhost:8000** and sign in:
+
+| Field | Default |
+|-------|---------|
+| Username | `admin` |
+| Password | `admin` |
+
+Change the password under **Settings** after first login.
+
+### Key pages
+
+| Page | URL | Description |
+|------|-----|-------------|
+| Home | `/` | Projects, activity feed, agents |
+| Project | `/projects/{id}` | Tasks, progress, comments |
+| All docs | `/projects/{id}/docs` | Read-only hub for spec / progress / closure |
+| Doc editor | `/projects/{id}/doc` | View or edit a single doc |
+| Audit log | `/projects/{id}/audit` | Project and task mutation history |
+| Agents | `/admin/agents` | Onboarded agents and activity |
+
+---
+
+## Docker Deployment
+
+Ship the MCP server as a container with a persistent database volume.
+
+```bash
+# Build
 docker build -t task-manager .
 
-# Run with persistent database volume
+# Run
 docker run -d \
   --name task-manager \
   -p 8000:8000 \
@@ -139,24 +245,20 @@ docker run -d \
   task-manager
 ```
 
-Agents connect to `http://<your-server>:8000/sse`.
+Agents connect to `http://<host>:8000/sse`.
 
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
-|---|---|---|
-| `TM_DB_PATH` | `/data/task_manager.db` | Path to the SQLite database file |
+|----------|---------|-------------|
+| `TM_DB_PATH` | `/data/task_manager.db` | SQLite database path |
 
 ### Docker Compose
 
-Create `docker-compose.yml`:
-
 ```yaml
-version: "3.8"
 services:
   task-manager:
     build: .
-    container_name: task-manager
     ports:
       - "8000:8000"
     volumes:
@@ -167,106 +269,123 @@ volumes:
   tm-data:
 ```
 
-Then:
-
 ```bash
 docker compose up -d
 ```
 
-## Quick Start (Web Dashboard)
+---
 
-```bash
-cd server/dashboard
-uvicorn app:app --reload --port 8000
-```
+## Documentation Model
 
-Open http://localhost:8000
+Each project and task supports three independent markdown documents:
 
-## Features
+| Type | When to write | Purpose |
+|------|---------------|---------|
+| **spec** | At creation | Scope, objectives, acceptance criteria |
+| **progress** | During work | Running log of decisions and changes |
+| **closure** | At completion | Summary and outcomes |
 
-- **Projects** — Initialize, update, track progress
-- **Ordered Tasks** — Tasks and subtasks with positional ordering (fractional indexing)
-- **6 Statuses** — `pending`, `in_progress`, `completed`, `blocked`, `failed`, `cancelled`
-- **Documentation** — Markdown docs (spec/progress/closure) for both projects and tasks
-- **Comments** — Append-only, timestamped comments on projects and tasks
-- **Agent Management** — Onboard agents with scoped API keys
-- **Audit Log** — Every mutation is logged with agent identity and field diffs
-- **CLI** — Zero-dependency command-line interface (argparse, no extra packages)
-- **MCP-native** — Works with any MCP-compatible AI agent (Cursor, Claude Desktop, etc.)
-- **Web Dashboard** — FastAPI-based UI for humans to view progress
-- **Portable Skill** — Reusable skill folder for any agent to copy
+**Rules of thumb**
+
+- Never overwrite a spec to record progress — use the progress doc instead.
+- View all docs for a project at `/projects/{id}/docs` (tabbed by type, grouped under the task tree).
+- Agents write docs via CLI (`doc project set` / `doc task set`) or MCP (`doc_project_update` / `doc_task_update`).
+
+Full workflow examples: [skill/task-management/references/examples.md](skill/task-management/references/examples.md)
+
+---
 
 ## Project Structure
 
 ```
 my-agent-project/
-├── Dockerfile                # Docker image for MCP server (HTTP/SSE)
-├── .dockerignore
+├── Dockerfile
+├── README.md
 ├── server/
-│   ├── schema.sql              # Database schema
-│   ├── db.py                   # SQLite data access layer
-│   ├── cli.py                  # Zero-dep CLI (argparse)
+│   ├── schema.sql              # SQLite schema
+│   ├── db.py                   # Data access layer
+│   ├── cli.py                  # CLI (zero extra dependencies)
 │   ├── mcp_server.py           # MCP server (stdio + HTTP/SSE)
 │   ├── requirements.txt
 │   ├── dashboard/
-│   │   ├── app.py              # FastAPI web dashboard
+│   │   ├── app.py              # FastAPI dashboard
 │   │   └── templates/          # Jinja2 HTML templates
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_cli.py
 │       └── test_db.py
-├── skill/
-│   └── task-management/
-│       ├── SKILL.md                # Portable skill (copy to agents)
-│       └── references/
-│           ├── reference.md        # Full API + CLI reference
-│           └── examples.md         # Usage examples
-└── README.md
+└── skill/
+    └── task-management/
+        ├── SKILL.md
+        └── references/
+            ├── reference.md    # Full API + CLI reference
+            └── examples.md     # Worked examples
 ```
 
-## CLI Commands (26 total)
+---
 
-### Projects (5)
-`python cli.py project create/list/get/update/delete`
+## CLI Reference
 
-### Tasks (8)
-`python cli.py task create/list/get/tree/subtree/update/move/delete`
+| Domain | Commands |
+|--------|----------|
+| **Database** | `db init` · `db path` |
+| **Projects** | `project create` · `list` · `get` · `update` · `delete` |
+| **Tasks** | `task create` · `list` · `get` · `tree` · `subtree` · `update` · `move` · `delete` |
+| **Docs** | `doc project get/set` · `doc task get/set` |
+| **Comments** | `comment add` · `list` · `delete` |
+| **Agents** | `agent onboard` · `list` · `audit` · `audit-log` |
 
-### Documentation (4)
-`python cli.py doc project get/set` · `python cli.py doc task get/set`
+```bash
+python cli.py --help                  # Top-level help
+python cli.py task create --help      # Per-command help
+```
 
-### Comments (3)
-`python cli.py comment add/list/delete`
+---
 
-### Agent Management (4)
-`python cli.py agent onboard/list/audit/audit-log`
+## MCP Tools
 
-### Database (2)
-`python cli.py db init` · `python cli.py db path`
-
-## MCP Tools (22 total)
-
-Same operations as the CLI, accessible via MCP protocol:
+22 tools mirroring the CLI surface:
 
 | Category | Tools |
-|---|---|
-| **Projects** (5) | `project_create`, `project_list`, `project_get`, `project_update`, `project_delete` |
-| **Tasks** (8) | `task_create`, `task_list`, `task_get`, `task_tree`, `task_subtree`, `task_update`, `task_move`, `task_delete` |
-| **Docs** (4) | `doc_project_get`, `doc_project_update`, `doc_task_get`, `doc_task_update` |
-| **Comments** (2) | `comment_add`, `comment_list` |
-| **Agent & Audit** (3) | `agent_onboard`, `agent_list`, `audit_log_get` |
+|----------|-------|
+| **Projects** | `project_create`, `project_list`, `project_get`, `project_update`, `project_delete` |
+| **Tasks** | `task_create`, `task_list`, `task_get`, `task_tree`, `task_subtree`, `task_update`, `task_move`, `task_delete` |
+| **Docs** | `doc_project_get`, `doc_project_update`, `doc_task_get`, `doc_task_update` |
+| **Comments** | `comment_add`, `comment_list` |
+| **Agents & audit** | `agent_onboard`, `agent_list`, `audit_log_get` |
 
-See [skill/task-management/references/reference.md](skill/task-management/references/reference.md) for details.
+Full schemas and parameters: [skill/task-management/references/reference.md](skill/task-management/references/reference.md)
 
-## Using the Skill
+---
 
-The `skill/task-management/` folder is portable. Any agent can copy it:
+## Agent Skill
+
+The `skill/task-management/` folder is portable. Copy it into your agent's skill directory:
 
 ```bash
 cp -r skill/task-management/ ~/.cursor/skills/task-management/
 ```
 
-The skill documents both CLI and MCP paths.
+The skill covers onboarding, CLI workflows, MCP usage, doc conventions, and audit practices.
+
+---
+
+## Development
+
+```bash
+cd server
+pip install -r requirements.txt
+
+# Run tests (uses isolated test database)
+python -m pytest
+
+# Run dashboard with auto-reload
+uvicorn dashboard.app:app --reload --port 8080 --app-dir .
+```
+
+Tests cover the data layer, CLI output, fractional task ordering, documentation CRUD, and audit activity queries.
+
+---
 
 ## License
 
