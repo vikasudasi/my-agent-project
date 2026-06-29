@@ -134,8 +134,9 @@ async def login_page(request: Request, error: str = ""):
     if _get_session_user(request):
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(
+        request,
         "login.html",
-        {"request": request, "error": error},
+        {"error": error},
     )
 
 
@@ -148,8 +149,9 @@ async def login(request: Request, response: Response,
         redirect.set_cookie(key="session", value=token, httponly=True, max_age=86400 * 7)
         return redirect
     return templates.TemplateResponse(
+        request,
         "login.html",
-        {"request": request, "error": "Invalid username or password"},
+        {"error": "Invalid username or password"},
     )
 
 
@@ -173,8 +175,9 @@ async def home(request: Request):
         enriched.append(progress if progress else p)
 
     return templates.TemplateResponse(
+        request,
         "index.html",
-        {"request": request, "projects": enriched, "status_color": _status_color},
+        {"projects": enriched, "status_color": _status_color},
     )
 
 
@@ -204,9 +207,9 @@ async def project_detail(request: Request, project_id: str):
     comments = list_comments("project", project_id)
 
     return templates.TemplateResponse(
+        request,
         "project.html",
         {
-            "request": request,
             "project": project,
             "task_tree": task_tree,
             "doc_spec": doc_spec,
@@ -274,9 +277,9 @@ async def task_detail(request: Request, task_id: str):
             break
 
     return templates.TemplateResponse(
+        request,
         "task_detail.html",
         {
-            "request": request,
             "task": task,
             "project": project,
             "full_tree": full_tree,
@@ -320,9 +323,9 @@ async def task_doc_page(request: Request, task_id: str,
     project = get_project(task["project_id"])
     comments = list_comments("task", task_id)
     return templates.TemplateResponse(
+        request,
         "doc.html",
         {
-            "request": request,
             "entity_type": "task",
             "entity_id": task_id,
             "title": task["title"],
@@ -354,9 +357,9 @@ async def project_doc_page(request: Request, project_id: str,
     doc = get_project_doc(project_id, doc_type=doc_type)
     comments = list_comments("project", project_id)
     return templates.TemplateResponse(
+        request,
         "doc.html",
         {
-            "request": request,
             "entity_type": "project",
             "entity_id": project_id,
             "title": project["name"],
@@ -387,8 +390,9 @@ async def admin_agents(request: Request):
     _require_admin(request)
     agents = list_agents()
     return templates.TemplateResponse(
+        request,
         "admin_agents.html",
-        {"request": request, "agents": agents},
+        {"agents": agents},
     )
 
 
@@ -400,8 +404,9 @@ async def admin_agent_detail(request: Request, agent_id: str):
         raise HTTPException(404, "Agent not found")
     audit = get_audit_log_by_agent(agent["name"])
     return templates.TemplateResponse(
+        request,
         "admin_agent_detail.html",
-        {"request": request, "agent": agent, "audit": audit, "new_key": None},
+        {"agent": agent, "audit": audit, "new_key": None},
     )
 
 
@@ -413,9 +418,9 @@ async def admin_agent_reissue(request: Request, agent_id: str):
         raise HTTPException(404, "Agent not found")
     log_audit("admin", "admin", "agent", agent_id, "key_reissued")
     return templates.TemplateResponse(
+        request,
         "admin_agent_detail.html",
         {
-            "request": request,
             "agent": result,
             "new_key": result["api_key"],
             "audit": get_audit_log_by_agent(result["name"]),
@@ -427,8 +432,9 @@ async def admin_agent_reissue(request: Request, agent_id: str):
 async def admin_settings(request: Request, message: str = "", error: str = ""):
     _require_admin(request)
     return templates.TemplateResponse(
+        request,
         "admin_settings.html",
-        {"request": request, "message": message, "error": error},
+        {"message": message, "error": error},
     )
 
 
@@ -441,23 +447,27 @@ async def admin_change_password(request: Request,
     global _ADMIN_PASSWORD_HASH
     if _hash_password(current_password) != _ADMIN_PASSWORD_HASH:
         return templates.TemplateResponse(
+            request,
             "admin_settings.html",
-            {"request": request, "error": "Current password is incorrect"},
+            {"error": "Current password is incorrect"},
         )
     if new_password != confirm_password:
         return templates.TemplateResponse(
+            request,
             "admin_settings.html",
-            {"request": request, "error": "New passwords do not match"},
+            {"error": "New passwords do not match"},
         )
     if len(new_password) < 4:
         return templates.TemplateResponse(
+            request,
             "admin_settings.html",
-            {"request": request, "error": "New password must be at least 4 characters"},
+            {"error": "New password must be at least 4 characters"},
         )
     _ADMIN_PASSWORD_HASH = _hash_password(new_password)
     return templates.TemplateResponse(
+        request,
         "admin_settings.html",
-        {"request": request, "message": "Password changed successfully"},
+        {"message": "Password changed successfully"},
     )
 
 

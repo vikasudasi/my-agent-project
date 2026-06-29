@@ -7,6 +7,7 @@ All backed by SQLite, accessible by any MCP-compatible AI agent.
 
 import json
 import logging
+import os
 import sys
 from typing import Any
 
@@ -436,9 +437,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         # ---- Auth check for mutation tools ----
         agent = None
         if name in _MUTATION_TOOLS:
-            api_key = arguments.get("api_key")
+            api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
             if not api_key:
-                return _err("Authentication required. Provide api_key parameter.")
+                return _err("Authentication required. Provide api_key parameter or set TM_API_KEY environment variable.")
             agent = validate_api_key(api_key)
             if not agent:
                 return _err("Invalid API key. Use agent_onboard tool to register.")
@@ -447,6 +448,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         if name == "project_create":
             result = create_project(arguments["name"], arguments.get("description", ""))
             log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
+            audit = get_audit_log("project", result["id"])
+            result["audit_log"] = audit
             return _ok(result)
 
         elif name == "project_list":
@@ -502,6 +505,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found")
             log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
+            audit = get_audit_log("task", result["id"])
+            result["audit_log"] = audit
             return _ok(result)
 
         elif name == "task_list":
@@ -708,6 +713,7 @@ def create_starlette_app() -> "Starlette":
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.cors import CORSMiddleware
+    from starlette.responses import PlainTextResponse
     from starlette.routing import Route
 
     sse = SseServerTransport("/messages")
@@ -748,15 +754,23 @@ def create_starlette_app() -> "Starlette":
                         server.create_initialization_options(),
                         stateless=True,
                     )
-                except Exception:
+                except BaseException:
                     logger.exception("Streamable HTTP session crashed")
 
-        async with anyio.create_task_group() as tg:
-            await tg.start(run_server)
-            await http_transport.handle_request(
-                request.scope, request.receive, request._send
+        try:
+            async with anyio.create_task_group() as tg:
+                await tg.start(run_server)
+                await http_transport.handle_request(
+                    request.scope, request.receive, request._send
+                )
+                await http_transport.terminate()
+        except BaseExceptionGroup:
+            logger.exception("Unhandled TaskGroup exception in Streamable HTTP handler")
+            return PlainTextResponse(
+                content='{"error":"Internal server error"}',
+                status_code=500,
+                media_type="application/json",
             )
-            await http_transport.terminate()
 
     return Starlette(
         debug=False,
