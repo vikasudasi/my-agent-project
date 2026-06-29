@@ -1,7 +1,26 @@
 <div class="task-item border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors"
+     data-task-id="{{ task.id }}"
+     data-status="{{ task.status }}"
+     data-title="{{ task.title | lower }}"
+     data-description="{{ task.description | lower }}"
      style="margin-left: {{ level * 1.5 if level is defined else 0 }}rem">
     <div class="flex items-center justify-between">
         <div class="flex items-center gap-3 flex-1 min-w-0">
+            {% if task.children %}
+            <button type="button"
+                    onclick="toggleSubtasks('{{ task.id }}')"
+                    id="toggle-{{ task.id }}"
+                    class="flex-shrink-0 w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-600"
+                    aria-expanded="false"
+                    title="Toggle subtasks">
+                <svg class="w-4 h-4 transition-transform" id="chevron-{{ task.id }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                </svg>
+            </button>
+            {% else %}
+            <span class="w-5 flex-shrink-0"></span>
+            {% endif %}
+
             <!-- Status indicator -->
             <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
                 <input type="hidden" name="status"
@@ -28,6 +47,9 @@
                 {% if task.description %}
                     <p class="text-xs text-gray-500 truncate">{{ task.description }}</p>
                 {% endif %}
+                {% if task.children %}
+                <span class="text-xs text-gray-400">{{ task.children | length }} subtask{{ 's' if task.children | length != 1 else '' }}</span>
+                {% endif %}
             </div>
         </div>
 
@@ -38,7 +60,7 @@
                 {{ task.status }}
             </span>
 
-            <!-- Status change dropdown (simplified) -->
+            <!-- Status change dropdown -->
             <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
                 <select name="status" onchange="this.form.submit()"
                         class="text-xs border border-gray-300 rounded px-1.5 py-1 bg-white focus:ring-1 focus:ring-blue-500">
@@ -48,11 +70,9 @@
                 </select>
             </form>
 
-            <!-- Doc link -->
             <a href="/tasks/{{ task.id }}/doc"
                class="text-xs text-gray-400 hover:text-gray-600 px-1" title="Documentation">&#128196;</a>
 
-            <!-- Subtask form toggle -->
             <button onclick="document.getElementById('subtask-{{ task.id }}').classList.toggle('hidden')"
                     class="text-xs text-blue-600 hover:text-blue-800">+sub</button>
         </div>
@@ -61,7 +81,7 @@
     <!-- Subtask creation form -->
     <form id="subtask-{{ task.id }}"
           action="/projects/{{ task.project_id }}/tasks/create" method="POST"
-          class="hidden mt-2 flex gap-2">
+          class="hidden mt-2 flex gap-2 ml-10">
         <input type="hidden" name="parent_id" value="{{ task.id }}">
         <input type="text" name="title" placeholder="Subtask title" required
                class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded">
@@ -69,9 +89,9 @@
                 class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
     </form>
 
-    <!-- Children -->
+    <!-- Children (collapsed by default) -->
     {% if task.children %}
-        <div class="mt-2 space-y-2">
+        <div id="subtasks-{{ task.id }}" class="hidden mt-2 space-y-2 task-children">
             {% for child in task.children %}
                 {% with task=child, level=(level + 1) if level is defined else 1 %}
                     {% include "task_item.html" %}

@@ -53,6 +53,17 @@
                             <dd class="font-medium">{{ task.created_at }}</dd>
                         </div>
                         <div>
+                            <dt class="text-gray-500">Created by</dt>
+                            <dd class="font-medium">
+                                {% if created_by %}
+                                {{ created_by.agent_name }}
+                                <span class="text-gray-400 text-xs">({{ created_by.master_name }})</span>
+                                {% else %}
+                                <span class="text-gray-400">Unknown</span>
+                                {% endif %}
+                            </dd>
+                        </div>
+                        <div>
                             <dt class="text-gray-500">Updated</dt>
                             <dd class="font-medium">{{ task.updated_at }}</dd>
                         </div>

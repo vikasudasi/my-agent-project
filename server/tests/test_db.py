@@ -62,6 +62,22 @@ class TestProjectCRUD:
     def test_delete_project_not_found(self):
         assert db.delete_project("nonexistent") is False
 
+    def test_list_projects_filter_status(self, project):
+        db.update_project(project["id"], status="archived")
+        active = db.list_projects(status="active")
+        archived = db.list_projects(status="archived")
+        assert project["id"] not in [p["id"] for p in active]
+        assert project["id"] in [p["id"] for p in archived]
+
+    def test_list_projects_search(self, project):
+        results = db.list_projects(q="Test Project")
+        assert project["id"] in [p["id"] for p in results]
+        assert db.list_projects(q="nonexistent_xyz") == []
+
+    def test_archive_project(self, project):
+        result = db.archive_project(project["id"])
+        assert result["status"] == "archived"
+
 
 class TestProjectProgress:
     def test_empty_project_progress(self, project):
@@ -402,3 +418,35 @@ class TestEdgeCases:
         assert len(children) == 3
         # The order is C, A, B because they were created in that order
         assert children[0]["id"] == c1["id"]
+
+
+# ======================================================================
+# Audit & Activity
+# ======================================================================
+
+class TestAuditActivity:
+    def test_get_task_creator(self, project):
+        t = db.create_task(project["id"], "Audited Task")
+        db.log_audit("test-agent", "Test Master", "task", t["id"], "created")
+        creator = db.get_task_creator(t["id"])
+        assert creator is not None
+        assert creator["agent_name"] == "test-agent"
+        assert creator["master_name"] == "Test Master"
+
+    def test_get_task_creator_not_found(self, task):
+        assert db.get_task_creator(task["id"]) is None
+
+    def test_get_project_audit_log(self, project, task):
+        db.log_audit("agent-a", "Master A", "project", project["id"], "created")
+        db.log_audit("agent-b", "Master B", "task", task["id"], "updated", "status", "pending", "in_progress")
+        entries = db.get_project_audit_log(project["id"])
+        assert len(entries) == 2
+        actions = {e["action"] for e in entries}
+        assert "created" in actions
+        assert "updated" in actions
+
+    def test_get_recent_activity(self, project, task):
+        db.log_audit("agent-a", "Master A", "task", task["id"], "created")
+        activity = db.get_recent_activity(limit=10)
+        assert len(activity) >= 1
+        assert any(a["entity_id"] == task["id"] for a in activity)

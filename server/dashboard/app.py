@@ -28,6 +28,7 @@ from db import (
     list_tasks,
     get_task_subtree,
     update_task,
+    update_project,
     delete_task,
     get_project_doc,
     upsert_project_doc,
@@ -43,6 +44,10 @@ from db import (
     log_audit,
     get_audit_log,
     get_audit_log_by_agent,
+    get_project_audit_log,
+    get_recent_activity,
+    get_task_creator,
+    archive_project,
     onboard_agent,
     validate_api_key,
 )
@@ -102,8 +107,22 @@ def _status_color(status: str) -> str:
         "cancelled": "#9ca3af",
         "active": "#3b82f6",
         "archived": "#6b7280",
+        "completed_project": "#22c55e",
     }
     return colors.get(status, "#6b7280")
+
+
+def _dashboard_actor(request: Request) -> tuple[str, str]:
+    user = _get_session_user(request) or "admin"
+    return user, user
+
+
+def _format_audit_detail(entry: dict) -> str:
+    if entry.get("field") and entry.get("old_value") is not None:
+        return f"{entry['field']}: {entry['old_value']} → {entry['new_value']}"
+    if entry.get("field"):
+        return entry["field"]
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +186,14 @@ async def logout(response: Response):
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    projects = list_projects()
+async def home(
+    request: Request,
+    q: str = Query(""),
+    show: str = Query("active"),
+):
+    status_filter = show if show in ("active", "archived", "all") else "active"
+    status = None if status_filter == "all" else status_filter
+    projects = list_projects(status=status, q=q.strip() or None)
     enriched = []
     for p in projects:
         progress = get_project_progress(p["id"])
@@ -177,21 +202,44 @@ async def home(request: Request):
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"projects": enriched, "status_color": _status_color},
+        {
+            "projects": enriched,
+            "agents": list_agents(),
+            "recent_activity": get_recent_activity(limit=25),
+            "status_color": _status_color,
+            "format_audit_detail": _format_audit_detail,
+            "search_q": q,
+            "show_filter": status_filter,
+        },
     )
 
 
 @app.post("/projects/create")
-async def project_create(name: str = Form(...), description: str = Form("")):
-    create_project(name, description)
+async def project_create(request: Request, name: str = Form(...), description: str = Form("")):
+    result = create_project(name, description)
+    agent, master = _dashboard_actor(request)
+    log_audit(agent, master, "project", result["id"], "created")
     return RedirectResponse("/", status_code=303)
 
 
-@app.post("/projects/{project_id}/delete")
-async def project_delete(project_id: str):
-    from db import delete_project as dp
-    dp(project_id)
+@app.post("/projects/{project_id}/archive")
+async def project_archive(request: Request, project_id: str):
+    old = get_project(project_id)
+    archive_project(project_id)
+    if old:
+        agent, master = _dashboard_actor(request)
+        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "archived")
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/projects/{project_id}/restore")
+async def project_restore(request: Request, project_id: str):
+    old = get_project(project_id)
+    update_project(project_id, status="active")
+    if old:
+        agent, master = _dashboard_actor(request)
+        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "active")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -223,26 +271,33 @@ async def project_detail(request: Request, project_id: str):
 
 
 @app.post("/projects/{project_id}/tasks/create")
-async def task_create(
+async def task_create_route(
+    request: Request,
     project_id: str,
     title: str = Form(...),
     description: str = Form(""),
     parent_id: str = Form(""),
 ):
-    create_task(
+    result = create_task(
         project_id,
         title,
         description,
         parent_id=parent_id if parent_id else None,
     )
+    if result:
+        agent, master = _dashboard_actor(request)
+        log_audit(agent, master, "task", result["id"], "created")
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 @app.post("/tasks/{task_id}/update")
-async def task_update_route(task_id: str, status: str = Form(...)):
-    update_task(task_id, status=status)
-    # Redirect back to the project page
-    task = get_task(task_id)
+async def task_update_route(request: Request, task_id: str, status: str = Form(...)):
+    old = get_task(task_id)
+    result = update_task(task_id, status=status)
+    if old and result and old["status"] != status:
+        agent, master = _dashboard_actor(request)
+        log_audit(agent, master, "task", task_id, "updated", "status", old["status"], status)
+    task = result or get_task(task_id)
     if task:
         return RedirectResponse(f"/projects/{task['project_id']}", status_code=303)
     return RedirectResponse("/", status_code=303)
@@ -288,6 +343,7 @@ async def task_detail(request: Request, task_id: str):
             "doc_closure": doc_closure,
             "comments": comments,
             "breadcrumb": breadcrumb,
+            "created_by": get_task_creator(task_id),
             "status_color": _status_color,
             "statuses": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
         },
@@ -299,10 +355,16 @@ async def task_detail(request: Request, task_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/comments/{entity_type}/{entity_id}")
-async def comment_add_route(entity_type: str, entity_id: str,
-                             content: str = Form(...),
-                             author: str = Form("")):
+async def comment_add_route(
+    request: Request,
+    entity_type: str,
+    entity_id: str,
+    content: str = Form(...),
+    author: str = Form(""),
+):
     add_comment(entity_type, entity_id, content, author=author)
+    agent, master = _dashboard_actor(request)
+    log_audit(agent, master, entity_type, entity_id, "comment_added")
     if entity_type == "project":
         return RedirectResponse(f"/projects/{entity_id}", status_code=303)
     return RedirectResponse(f"/tasks/{entity_id}", status_code=303)
@@ -338,12 +400,14 @@ async def task_doc_page(request: Request, task_id: str,
 
 
 @app.post("/tasks/{task_id}/doc")
-async def task_doc_update(task_id: str, content: str = Form(...),
+async def task_doc_update(request: Request, task_id: str, content: str = Form(...),
                            doc_type: str = Form("spec")):
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
     upsert_task_doc(task_id, content, doc_type=doc_type)
+    agent, master = _dashboard_actor(request)
+    log_audit(agent, master, "task", task_id, "updated", f"doc_{doc_type}")
     return RedirectResponse(f"/tasks/{task_id}/doc?type={doc_type}", status_code=303)
 
 
@@ -372,13 +436,33 @@ async def project_doc_page(request: Request, project_id: str,
 
 
 @app.post("/projects/{project_id}/doc")
-async def project_doc_update(project_id: str, content: str = Form(...),
+async def project_doc_update(request: Request, project_id: str, content: str = Form(...),
                               doc_type: str = Form("spec")):
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     upsert_project_doc(project_id, content, doc_type=doc_type)
+    agent, master = _dashboard_actor(request)
+    log_audit(agent, master, "project", project_id, "updated", f"doc_{doc_type}")
     return RedirectResponse(f"/projects/{project_id}/doc?type={doc_type}", status_code=303)
+
+
+@app.get("/projects/{project_id}/audit", response_class=HTMLResponse)
+async def project_audit_page(request: Request, project_id: str):
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    audit = get_project_audit_log(project_id)
+    return templates.TemplateResponse(
+        request,
+        "project_audit.html",
+        {
+            "project": project,
+            "audit": audit,
+            "status_color": _status_color,
+            "format_audit_detail": _format_audit_detail,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +490,7 @@ async def admin_agent_detail(request: Request, agent_id: str):
     return templates.TemplateResponse(
         request,
         "admin_agent_detail.html",
-        {"agent": agent, "audit": audit, "new_key": None},
+        {"agent": agent, "audit": audit, "new_key": None, "back_url": "/", "back_label": "Dashboard"},
     )
 
 
@@ -424,6 +508,8 @@ async def admin_agent_reissue(request: Request, agent_id: str):
             "agent": result,
             "new_key": result["api_key"],
             "audit": get_audit_log_by_agent(result["name"]),
+            "back_url": "/",
+            "back_label": "Dashboard",
         },
     )
 

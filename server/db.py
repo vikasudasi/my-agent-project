@@ -53,11 +53,19 @@ def create_project(name: str, description: str = "") -> dict:
     return dict(row)
 
 
-def list_projects() -> list[dict]:
+def list_projects(status: Optional[str] = None, q: Optional[str] = None) -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM projects ORDER BY created_at DESC"
-        ).fetchall()
+        query = "SELECT * FROM projects WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if q:
+            query += " AND (name LIKE ? OR description LIKE ?)"
+            like = f"%{q}%"
+            params.extend([like, like])
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -89,6 +97,10 @@ def update_project(project_id: str, name: Optional[str] = None,
         conn.execute(f"UPDATE projects SET {set_clause} WHERE id = ?", values)
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     return dict(row)
+
+
+def archive_project(project_id: str) -> Optional[dict]:
+    return update_project(project_id, status="archived")
 
 
 def delete_project(project_id: str) -> bool:
@@ -535,3 +547,50 @@ def get_audit_log_by_agent(agent_name: str) -> list[dict]:
             (agent_name,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_project_audit_log(project_id: str, limit: int = 100) -> list[dict]:
+    """Audit entries for a project and all its tasks."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT a.*, t.title AS task_title "
+            "FROM agent_audit_log a "
+            "LEFT JOIN tasks t ON a.entity_type = 'task' AND a.entity_id = t.id "
+            "WHERE (a.entity_type = 'project' AND a.entity_id = ?) "
+            "   OR (a.entity_type = 'task' AND t.project_id = ?) "
+            "ORDER BY a.created_at DESC LIMIT ?",
+            (project_id, project_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_activity(limit: int = 25) -> list[dict]:
+    """Cross-project activity feed from audit log."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT a.*, "
+            "p.name AS project_name, "
+            "t.title AS task_title, "
+            "t.project_id AS task_project_id "
+            "FROM agent_audit_log a "
+            "LEFT JOIN tasks t ON a.entity_type = 'task' AND a.entity_id = t.id "
+            "LEFT JOIN projects p ON "
+            "  (a.entity_type = 'project' AND a.entity_id = p.id) "
+            "  OR (a.entity_type = 'task' AND t.project_id = p.id) "
+            "WHERE a.entity_type IN ('project', 'task') "
+            "ORDER BY a.created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_task_creator(task_id: str) -> Optional[dict]:
+    """Who created a task (from audit log)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT agent_name, master_name, created_at FROM agent_audit_log "
+            "WHERE entity_type = 'task' AND entity_id = ? AND action = 'created' "
+            "ORDER BY created_at ASC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    return dict(row) if row else None
