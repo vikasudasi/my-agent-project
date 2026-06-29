@@ -376,6 +376,33 @@ class TestDocs:
     def test_set_task_doc_invalid_task(self):
         assert db.upsert_task_doc("nonexistent", "content") is False
 
+    def test_get_project_doc_meta(self, project):
+        assert db.get_project_doc_meta(project["id"]) is None
+        db.upsert_project_doc(project["id"], "# Spec\nHello", "spec")
+        meta = db.get_project_doc_meta(project["id"], "spec")
+        assert meta is not None
+        assert meta["content"] == "# Spec\nHello"
+        assert meta["updated_at"]
+
+    def test_get_task_doc_meta(self, task):
+        db.upsert_task_doc(task["id"], "## Task spec", "spec")
+        meta = db.get_task_doc_meta(task["id"], "spec")
+        assert meta["content"] == "## Task spec"
+
+    def test_build_project_docs_hub(self, project, task):
+        db.upsert_project_doc(project["id"], "# Project spec", "spec")
+        db.upsert_task_doc(task["id"], "# Task spec", "spec")
+        sub = db.create_task(project["id"], "Sub", parent_id=task["id"])
+        db.upsert_task_doc(sub["id"], "# Sub spec", "spec")
+
+        hub = db.build_project_docs_hub(project["id"], "spec")
+        assert hub["project_doc"]["content"] == "# Project spec"
+        assert len(hub["task_tree"]) == 1
+        root = hub["task_tree"][0]
+        assert root["doc"]["content"] == "# Task spec"
+        assert len(root["children"]) == 1
+        assert root["children"][0]["doc"]["content"] == "# Sub spec"
+
 
 # ======================================================================
 # Edge Cases

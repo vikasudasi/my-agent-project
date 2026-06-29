@@ -339,12 +339,19 @@ def delete_task(task_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_project_doc(project_id: str, doc_type: str = "spec") -> Optional[str]:
+    meta = get_project_doc_meta(project_id, doc_type)
+    return meta["content"] if meta else ""
+
+
+def get_project_doc_meta(project_id: str, doc_type: str = "spec") -> Optional[dict]:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT content FROM project_docs WHERE project_id = ? AND doc_type = ?",
+            "SELECT content, updated_at FROM project_docs WHERE project_id = ? AND doc_type = ?",
             (project_id, doc_type),
         ).fetchone()
-    return row["content"] if row else ""
+    if not row or not row["content"]:
+        return None
+    return dict(row)
 
 
 def upsert_project_doc(project_id: str, content: str, doc_type: str = "spec") -> bool:
@@ -364,12 +371,55 @@ def upsert_project_doc(project_id: str, content: str, doc_type: str = "spec") ->
 
 
 def get_task_doc(task_id: str, doc_type: str = "spec") -> Optional[str]:
+    meta = get_task_doc_meta(task_id, doc_type)
+    return meta["content"] if meta else ""
+
+
+def get_task_doc_meta(task_id: str, doc_type: str = "spec") -> Optional[dict]:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT content FROM task_docs WHERE task_id = ? AND doc_type = ?",
+            "SELECT content, updated_at FROM task_docs WHERE task_id = ? AND doc_type = ?",
             (task_id, doc_type),
         ).fetchone()
-    return row["content"] if row else ""
+    if not row or not row["content"]:
+        return None
+    return dict(row)
+
+
+def build_project_docs_hub(project_id: str, doc_type: str = "spec") -> dict:
+    """Project doc + task tree with docs attached for read-only hub."""
+    with get_connection() as conn:
+        proj_row = conn.execute(
+            "SELECT content, updated_at FROM project_docs WHERE project_id = ? AND doc_type = ?",
+            (project_id, doc_type),
+        ).fetchone()
+        task_doc_rows = conn.execute(
+            "SELECT t.id, d.content, d.updated_at "
+            "FROM tasks t "
+            "LEFT JOIN task_docs d ON d.task_id = t.id AND d.doc_type = ? "
+            "WHERE t.project_id = ?",
+            (doc_type, project_id),
+        ).fetchall()
+
+    docs_by_task: dict[str, dict] = {}
+    for r in task_doc_rows:
+        if r["content"]:
+            docs_by_task[r["id"]] = {"content": r["content"], "updated_at": r["updated_at"]}
+
+    tree = get_task_subtree(project_id)
+    _attach_docs_to_tree(tree, docs_by_task)
+
+    return {
+        "project_doc": dict(proj_row) if proj_row and proj_row["content"] else None,
+        "task_tree": tree,
+    }
+
+
+def _attach_docs_to_tree(tasks: list[dict], docs_by_task: dict[str, dict]) -> None:
+    for t in tasks:
+        t["doc"] = docs_by_task.get(t["id"])
+        if t.get("children"):
+            _attach_docs_to_tree(t["children"], docs_by_task)
 
 
 def upsert_task_doc(task_id: str, content: str, doc_type: str = "spec") -> bool:

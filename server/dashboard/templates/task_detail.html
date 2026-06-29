@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ task.title }} - AI Task Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    {% include "includes/markdown_assets.html" %}
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-200 shadow-sm">
@@ -135,9 +136,10 @@
                         </div>
                     </div>
                     <div class="p-6">
-                        {% set current_doc = doc_spec %}
-                        {% if current_doc %}
-                        <pre class="whitespace-pre-wrap text-sm text-gray-700">{{ current_doc }}</pre>
+                        {% if doc_spec %}
+                        {% with content=doc_spec %}
+                            {% include "includes/markdown_block.html" %}
+                        {% endwith %}
                         {% else %}
                         <p class="text-sm text-gray-400 italic">No spec document yet.</p>
                         {% endif %}

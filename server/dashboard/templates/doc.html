@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }} - Documentation</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    {% include "includes/markdown_assets.html" %}
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-200 shadow-sm">
@@ -22,24 +23,38 @@
     <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <!-- Doc type tabs -->
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
-            <div class="border-b border-gray-200">
+            <div class="border-b border-gray-200 flex items-center justify-between">
                 <div class="flex">
                     {% for dt in ['spec', 'progress', 'closure'] %}
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ dt }}"
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ dt }}{% if mode == 'edit' %}&mode=edit{% endif %}"
                        class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
                         {{ dt }}
                     </a>
                     {% endfor %}
                 </div>
+                <div class="flex gap-1 pr-2">
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
+                       class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode != 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                        View
+                    </a>
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
+                       class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode == 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                        Edit
+                    </a>
+                </div>
             </div>
         </div>
 
+        {% if mode == 'edit' %}
         <!-- Editor -->
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <form action="/{{ entity_type }}s/{{ entity_id }}/doc" method="POST">
                 <input type="hidden" name="doc_type" value="{{ doc_type }}">
                 <div class="flex items-center justify-between mb-4">
-                    <h2 class="text-sm font-medium text-gray-700 capitalize">{{ doc_type }} document</h2>
+                    <h2 class="text-sm font-medium text-gray-700 capitalize">Edit {{ doc_type }}</h2>
+                    {% if doc_meta %}
+                    <span class="text-xs text-gray-400">Last saved {{ doc_meta.updated_at }}</span>
+                    {% endif %}
                 </div>
                 <div class="mb-4">
                     <textarea name="content" rows="20"
@@ -51,21 +66,36 @@
                             class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
                         Save {{ doc_type }}
                     </button>
-                    <a href="/{{ 'tasks/' + entity_id if entity_type == 'task' else 'projects/' + project_id }}"
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
                        class="text-sm text-gray-600 hover:text-gray-800">
                         Cancel
                     </a>
                 </div>
             </form>
         </div>
-
-        {% if content %}
-            <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                <h2 class="text-sm font-medium text-gray-700 mb-3">Preview</h2>
-                <div class="prose prose-sm max-w-none text-gray-700">
-                    <pre class="whitespace-pre-wrap text-sm bg-gray-50 p-4 rounded-lg border">{{ content }}</pre>
+        {% else %}
+        <!-- Read view -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-medium text-gray-700 capitalize">{{ doc_type }} document</h2>
+                <div class="flex items-center gap-3">
+                    {% if doc_meta %}
+                    <span class="text-xs text-gray-400">Updated {{ doc_meta.updated_at }}</span>
+                    {% endif %}
+                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
+                       class="text-sm text-blue-600 hover:underline">Edit</a>
                 </div>
             </div>
+            {% if content %}
+            {% with content=content %}
+                {% include "includes/markdown_block.html" %}
+            {% endwith %}
+            {% else %}
+            <p class="text-sm text-gray-400 italic">No {{ doc_type }} document yet.</p>
+            <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
+               class="mt-3 inline-block text-sm text-blue-600 hover:underline">Write {{ doc_type }} &rarr;</a>
+            {% endif %}
+        </div>
         {% endif %}
 
         <!-- Comments -->

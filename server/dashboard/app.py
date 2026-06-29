@@ -34,6 +34,9 @@ from db import (
     upsert_project_doc,
     get_task_doc,
     upsert_task_doc,
+    get_project_doc_meta,
+    get_task_doc_meta,
+    build_project_docs_hub,
     create_project,
     create_task,
     add_comment,
@@ -376,12 +379,14 @@ async def comment_add_route(
 
 @app.get("/tasks/{task_id}/doc", response_class=HTMLResponse)
 async def task_doc_page(request: Request, task_id: str,
-                         type: str = Query("spec")):
+                         type: str = Query("spec"),
+                         mode: str = Query("view")):
     doc_type = type
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    doc = get_task_doc(task_id, doc_type=doc_type)
+    doc_meta = get_task_doc_meta(task_id, doc_type=doc_type)
+    doc = doc_meta["content"] if doc_meta else ""
     project = get_project(task["project_id"])
     comments = list_comments("task", task_id)
     return templates.TemplateResponse(
@@ -393,7 +398,9 @@ async def task_doc_page(request: Request, task_id: str,
             "title": task["title"],
             "project_id": task["project_id"],
             "content": doc,
+            "doc_meta": doc_meta,
             "doc_type": doc_type,
+            "mode": mode if mode == "edit" else "view",
             "comments": comments,
         },
     )
@@ -413,12 +420,14 @@ async def task_doc_update(request: Request, task_id: str, content: str = Form(..
 
 @app.get("/projects/{project_id}/doc", response_class=HTMLResponse)
 async def project_doc_page(request: Request, project_id: str,
-                            type: str = Query("spec")):
+                            type: str = Query("spec"),
+                            mode: str = Query("view")):
     doc_type = type
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    doc = get_project_doc(project_id, doc_type=doc_type)
+    doc_meta = get_project_doc_meta(project_id, doc_type=doc_type)
+    doc = doc_meta["content"] if doc_meta else ""
     comments = list_comments("project", project_id)
     return templates.TemplateResponse(
         request,
@@ -429,7 +438,9 @@ async def project_doc_page(request: Request, project_id: str,
             "title": project["name"],
             "project_id": project_id,
             "content": doc,
+            "doc_meta": doc_meta,
             "doc_type": doc_type,
+            "mode": mode if mode == "edit" else "view",
             "comments": comments,
         },
     )
@@ -445,6 +456,26 @@ async def project_doc_update(request: Request, project_id: str, content: str = F
     agent, master = _dashboard_actor(request)
     log_audit(agent, master, "project", project_id, "updated", f"doc_{doc_type}")
     return RedirectResponse(f"/projects/{project_id}/doc?type={doc_type}", status_code=303)
+
+
+@app.get("/projects/{project_id}/docs", response_class=HTMLResponse)
+async def project_docs_hub(request: Request, project_id: str,
+                            type: str = Query("spec")):
+    doc_type = type if type in ("spec", "progress", "closure") else "spec"
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    hub = build_project_docs_hub(project_id, doc_type=doc_type)
+    return templates.TemplateResponse(
+        request,
+        "project_docs_hub.html",
+        {
+            "project": project,
+            "hub": hub,
+            "doc_type": doc_type,
+            "status_color": _status_color,
+        },
+    )
 
 
 @app.get("/projects/{project_id}/audit", response_class=HTMLResponse)
