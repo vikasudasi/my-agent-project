@@ -290,6 +290,8 @@ async def task_create_route(
     if result:
         agent, master = _dashboard_actor(request)
         log_audit(agent, master, "task", result["id"], "created")
+    if parent_id:
+        return RedirectResponse(f"/tasks/{parent_id}", status_code=303)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
@@ -302,6 +304,9 @@ async def task_update_route(request: Request, task_id: str, status: str = Form(.
         log_audit(agent, master, "task", task_id, "updated", "status", old["status"], status)
     task = result or get_task(task_id)
     if task:
+        referer = request.headers.get("referer", "")
+        if f"/tasks/{task_id}" in referer:
+            return RedirectResponse(f"/tasks/{task_id}", status_code=303)
         return RedirectResponse(f"/projects/{task['project_id']}", status_code=303)
     return RedirectResponse("/", status_code=303)
 
@@ -318,6 +323,8 @@ async def task_detail(request: Request, task_id: str):
 
     project = get_project_progress(task["project_id"])
     full_tree = get_task_subtree(task["project_id"])
+    task_tree = get_task_tree(task_id)
+    subtasks = task_tree["children"] if task_tree else []
     doc_spec = get_task_doc(task_id, doc_type="spec")
     doc_progress = get_task_doc(task_id, doc_type="progress")
     doc_closure = get_task_doc(task_id, doc_type="closure")
@@ -341,6 +348,7 @@ async def task_detail(request: Request, task_id: str):
             "task": task,
             "project": project,
             "full_tree": full_tree,
+            "subtasks": subtasks,
             "doc_spec": doc_spec,
             "doc_progress": doc_progress,
             "doc_closure": doc_closure,

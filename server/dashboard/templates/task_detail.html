@@ -94,6 +94,50 @@
                     </form>
                 </div>
 
+                <!-- Subtasks -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-lg font-semibold text-gray-900">
+                            Subtasks
+                            {% if subtasks %}
+                            <span class="text-sm font-normal text-gray-500">({{ subtasks | length }})</span>
+                            {% endif %}
+                        </h2>
+                        <button onclick="document.getElementById('newSubtaskForm').classList.toggle('hidden')"
+                                class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
+                            + Add Subtask
+                        </button>
+                    </div>
+
+                    <form id="newSubtaskForm"
+                          action="/projects/{{ project.id }}/tasks/create" method="POST"
+                          class="hidden mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <input type="hidden" name="parent_id" value="{{ task.id }}">
+                        <div class="flex gap-2">
+                            <input type="text" name="title" placeholder="Subtask title" required
+                                   class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md">
+                            <input type="text" name="description" placeholder="Description (optional)"
+                                   class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md">
+                            <button type="submit"
+                                    class="px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                                Create
+                            </button>
+                        </div>
+                    </form>
+
+                    {% if subtasks %}
+                    <div class="space-y-2">
+                        {% for subtask in subtasks %}
+                            {% with task=subtask, level=0 %}
+                                {% include "task_item.html" %}
+                            {% endwith %}
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-sm text-gray-500 text-center py-6">No subtasks yet. Break this task into smaller steps.</p>
+                    {% endif %}
+                </div>
+
                 <!-- Comments section -->
                 <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                     <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
@@ -175,5 +219,17 @@
             </div>
         </div>
     </main>
+
+    <script>
+    function toggleSubtasks(taskId) {
+        const container = document.getElementById('subtasks-' + taskId);
+        const chevron = document.getElementById('chevron-' + taskId);
+        const btn = document.getElementById('toggle-' + taskId);
+        if (!container) return;
+        const expanded = container.classList.toggle('hidden') === false;
+        if (chevron) chevron.style.transform = expanded ? 'rotate(90deg)' : '';
+        if (btn) btn.setAttribute('aria-expanded', expanded);
+    }
+    </script>
 </body>
 </html>
