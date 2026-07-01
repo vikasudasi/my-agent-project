@@ -314,6 +314,11 @@ my-agent-project/
 │       ├── conftest.py
 │       ├── test_cli.py
 │       └── test_db.py
+├── sdk/
+│   ├── task_orchestrator/      # Sequential subtask orchestrator (Phase 1)
+│   ├── examples/
+│   │   └── orchestrator.yaml
+│   └── README.md
 └── skill/
     └── task-management/
         ├── SKILL.md
@@ -367,6 +372,20 @@ cp -r skill/task-management/ ~/.cursor/skills/task-management/
 ```
 
 The skill covers onboarding, CLI workflows, MCP usage, doc conventions, and audit practices.
+
+---
+
+## Task Orchestrator SDK
+
+For large tasks with many subtasks, run a headless agent **one subtask at a time** instead of one giant prompt. The SDK sequences work; each agent invocation fetches task details from TM via MCP.
+
+```bash
+cd sdk && pip install -e .
+task-orchestrator plan --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --pretty
+task-orchestrator run --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --dry-run
+```
+
+See [sdk/README.md](sdk/README.md) for config and prerequisites.
 
 ---
 
