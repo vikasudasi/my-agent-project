@@ -235,18 +235,23 @@ def get_task(task_id: str) -> Optional[dict]:
 
 
 def get_task_tree(task_id: str) -> Optional[dict]:
-    """Get a task with its full subtree of nested children."""
-    with get_connection() as conn:
-        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if not task:
-            return None
+    """Get a task with its full recursive subtree of nested children."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    full = get_task_subtree(task["project_id"])
 
-        task_dict = dict(task)
-        children = conn.execute(
-            "SELECT * FROM tasks WHERE parent_id = ? ORDER BY rank ASC", (task_id,)
-        ).fetchall()
-        task_dict["children"] = [dict(c) for c in children]
-    return task_dict
+    def _find_node(nodes: list[dict], tid: str) -> Optional[dict]:
+        for node in nodes:
+            if node["id"] == tid:
+                return node
+            if node.get("children"):
+                found = _find_node(node["children"], tid)
+                if found:
+                    return found
+        return None
+
+    return _find_node(full, task_id)
 
 
 def get_task_subtree(project_id: str) -> list[dict]:
@@ -456,13 +461,25 @@ def add_comment(entity_type: str, entity_id: str, content: str,
     return dict(row)
 
 
-def list_comments(entity_type: str, entity_id: str) -> list[dict]:
+def list_comments(
+    entity_type: str,
+    entity_id: str,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+) -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM comments WHERE entity_type = ? AND entity_id = ? "
-            "ORDER BY created_at ASC",
-            (entity_type, entity_id),
-        ).fetchall()
+        query = (
+            "SELECT * FROM comments WHERE entity_type = ? AND entity_id = ?"
+        )
+        params: list = [entity_type, entity_id]
+        if since:
+            query += " AND created_at >= ?"
+            params.append(since)
+        query += " ORDER BY created_at ASC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -471,6 +488,42 @@ def delete_comment(comment_id: str) -> bool:
         cur = conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
         deleted = cur.rowcount > 0
     return deleted
+
+
+def count_comments(entity_type: str, entity_id: str) -> int:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id),
+        ).fetchone()
+    return row[0]
+
+
+def get_task_subtask_stats(task_id: str) -> dict:
+    with get_connection() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE parent_id = ?", (task_id,)
+        ).fetchone()[0]
+        completed = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE parent_id = ? AND status = 'completed'",
+            (task_id,),
+        ).fetchone()[0]
+    return {"subtask_count": total, "subtasks_completed": completed}
+
+
+def get_docs_summary(entity_type: str, entity_id: str) -> dict:
+    summary: dict = {}
+    for doc_type in ("spec", "progress", "closure"):
+        if entity_type == "project":
+            meta = get_project_doc_meta(entity_id, doc_type)
+        else:
+            meta = get_task_doc_meta(entity_id, doc_type)
+        summary[doc_type] = {
+            "exists": meta is not None,
+            "updated_at": meta["updated_at"] if meta else None,
+            "char_count": len(meta["content"]) if meta else 0,
+        }
+    return summary
 
 
 # ---------------------------------------------------------------------------

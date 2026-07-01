@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 import anyio
 from anyio.abc import TaskStatus
@@ -26,6 +26,7 @@ from db import (
     get_project,
     update_project,
     delete_project,
+    archive_project,
     get_project_progress,
     create_task,
     list_tasks,
@@ -37,8 +38,10 @@ from db import (
     delete_task,
     get_project_doc,
     upsert_project_doc,
+    get_project_doc_meta,
     get_task_doc,
     upsert_task_doc,
+    get_task_doc_meta,
     add_comment,
     list_comments,
     delete_comment,
@@ -47,11 +50,37 @@ from db import (
     list_agents,
     log_audit,
     get_audit_log,
+    get_project_audit_log,
+)
+from mcp_enrich import (
+    enrich_project,
+    enrich_task,
+    enrich_task_list,
+    enrich_doc_response,
+    build_project_snapshot,
+    list_projects_enriched,
+)
+from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
+from mcp_validation import (
+    validate_project_create,
+    validate_task_create,
+    validate_project_update,
+    validate_task_update,
+    validate_task_delete,
+    require_text,
+    MIN_REASON_LEN,
 )
 
-server = Server("task-manager", version="1.0.0",
-                instructions="Task Management System for AI Agents. "
-                             "Manage projects, ordered tasks/subtasks, and documentation.")
+server = Server(
+    "task-manager",
+    version="2.0.0",
+    instructions=(
+        "Task Management System for AI Agents. "
+        "Always provide meaningful descriptions when creating projects and tasks. "
+        "Write spec docs with ## Objective and ## Acceptance Criteria. "
+        "Prefer project_archive over project_delete."
+    ),
+)
 
 logger = logging.getLogger("mcp-server")
 
@@ -65,25 +94,40 @@ _API_KEY_PROP = {
 # Tools that require authentication (read-only tools skip auth)
 _MUTATION_TOOLS = {
     "project_create", "project_update", "project_delete",
+    "project_archive", "project_restore",
     "task_create", "task_update", "task_move", "task_delete",
     "doc_project_update", "doc_task_update",
     "comment_add",
 }
 
+_DESC_PROP = {
+    "type": "string",
+    "minLength": 40,
+    "description": "Required. Goal, scope boundary, and success definition (min 40 chars).",
+}
 
-# ---------------------------------------------------------------------------
-# Tool definitions
-# ---------------------------------------------------------------------------
+_REASON_PROP = {
+    "type": "string",
+    "minLength": 20,
+    "description": "Required when changing status. Explain why.",
+}
 
-def _ok(data: Any) -> CallToolResult:
+
+def _ok(data: Any, tool: Optional[str] = None) -> CallToolResult:
+    body: dict[str, Any] = {"ok": True, "data": data}
+    if tool:
+        body["meta"] = {"tool": tool}
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(data, indent=2, default=str))]
+        content=[TextContent(type="text", text=json.dumps(body, indent=2, default=str))]
     )
 
 
-def _err(msg: str) -> CallToolResult:
+def _err(msg: str, code: str = "ERROR", field: Optional[str] = None) -> CallToolResult:
+    error: dict[str, Any] = {"code": code, "message": msg}
+    if field:
+        error["field"] = field
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps({"error": msg}))],
+        content=[TextContent(type="text", text=json.dumps({"ok": False, "error": error}))],
         isError=True,
     )
 
@@ -91,107 +135,171 @@ def _err(msg: str) -> CallToolResult:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
-        # ---- Projects ----
         Tool(
             name="project_create",
-            description="Create a new project. Returns the created project with its id.",
+            description="Create a new project. Description is required. Optionally provide initial_spec markdown.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Project name"},
-                    "description": {"type": "string", "description": "Optional project description"},
+                    "name": {
+                        "type": "string",
+                        "minLength": 3,
+                        "description": "Short unique project name",
+                    },
+                    "description": _DESC_PROP,
+                    "initial_spec": {
+                        "type": "string",
+                        "minLength": 80,
+                        "description": "Recommended. Markdown with ## Objective and ## Acceptance Criteria",
+                    },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["name"],
+                "required": ["name", "description", "api_key"],
             },
         ),
         Tool(
             name="project_list",
-            description="List all projects with their current status.",
+            description="List projects with optional filters and progress stats.",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["active", "archived", "completed", "all"],
+                        "description": "Filter by status (default: active)",
+                    },
+                    "q": {"type": "string", "description": "Search name or description"},
+                    "include_progress": {
+                        "type": "boolean",
+                        "description": "Include task progress stats (default: true)",
+                    },
+                },
             },
         ),
         Tool(
             name="project_get",
-            description="Get project details including task progress statistics.",
+            description="Get project details, progress, and docs summary.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
+                    "project_id": {"type": "string"},
+                    "include_recent_activity": {
+                        "type": "boolean",
+                        "description": "Include last 10 audit entries (default: false)",
+                    },
                 },
                 "required": ["project_id"],
             },
         ),
-                Tool(
-            name="project_update",
-            description="Update a project's name, description, or status.",
+        Tool(
+            name="project_snapshot",
+            description="Full project planning view: progress, docs summary, task tree, recent activity.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                    "name": {"type": "string", "description": "New project name"},
-                    "description": {"type": "string", "description": "New description"},
+                    "project_id": {"type": "string"},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="project_update",
+            description="Update project fields. reason required when changing status.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "name": {"type": "string", "minLength": 3},
+                    "description": _DESC_PROP,
                     "status": {
                         "type": "string",
                         "enum": ["active", "archived", "completed"],
-                        "description": "New status",
+                        "description": "Prefer archived over delete",
                     },
+                    "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id"],
+                "required": ["project_id", "api_key"],
+            },
+        ),
+        Tool(
+            name="project_archive",
+            description="Archive a project (soft delete). Preferred over project_delete.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "reason": _REASON_PROP,
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["project_id", "reason", "api_key"],
+            },
+        ),
+        Tool(
+            name="project_restore",
+            description="Restore an archived project to active status.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["project_id", "api_key"],
             },
         ),
         Tool(
             name="project_delete",
-            description="Delete a project and all its tasks and documentation.",
+            description="Permanently delete a project and all data. Use project_archive instead when possible.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
+                    "project_id": {"type": "string"},
+                    "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id"],
+                "required": ["project_id", "reason", "api_key"],
             },
         ),
-        # ---- Tasks ----
         Tool(
             name="task_create",
-            description="Create a task in a project. Can be a subtask (via parent_id) "
-                        "and can be placed after a specific sibling (via after_task_id).",
+            description="Create a task. Description required. Use initial_spec for root/non-trivial tasks.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                    "title": {"type": "string", "description": "Task title"},
-                    "description": {"type": "string", "description": "Optional task description"},
-                    "parent_id": {"type": "string", "description": "Parent task ID for subtasks"},
-                    "after_task_id": {
+                    "project_id": {"type": "string"},
+                    "title": {
                         "type": "string",
-                        "description": "Place this task after this sibling task ID. "
-                                       "Omit to append at the end.",
+                        "minLength": 3,
+                        "description": "Action-oriented title",
+                    },
+                    "description": _DESC_PROP,
+                    "parent_id": {"type": "string", "description": "Parent task ID for subtasks"},
+                    "after_task_id": {"type": "string", "description": "Insert after this sibling"},
+                    "initial_spec": {
+                        "type": "string",
+                        "minLength": 80,
+                        "description": "Markdown spec with ## Objective and ## Acceptance Criteria",
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "title"],
+                "required": ["project_id", "title", "description", "api_key"],
             },
         ),
         Tool(
             name="task_list",
-            description="List top-level tasks in a project, optionally filtered by status.",
+            description="List tasks with optional filters. Includes subtask and doc flags by default.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
+                    "project_id": {"type": "string"},
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                        "description": "Filter by status",
                     },
-                    "parent_id": {
-                        "type": "string",
-                        "description": "If provided, list children of this task instead of root tasks",
+                    "parent_id": {"type": "string", "description": "List children of this task"},
+                    "include_enrichment": {
+                        "type": "boolean",
+                        "description": "Include docs_summary and subtask_stats (default: true)",
                     },
                 },
                 "required": ["project_id"],
@@ -199,23 +307,19 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_get",
-            description="Get a single task's details.",
+            description="Get task details with docs summary, subtask stats, created_by, and parent.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                },
+                "properties": {"task_id": {"type": "string"}},
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="task_tree",
-            description="Get a task and its full subtree of nested children.",
+            description="Get a task and its full recursive subtree of nested children.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                },
+                "properties": {"task_id": {"type": "string"}},
                 "required": ["task_id"],
             },
         ),
@@ -224,206 +328,188 @@ async def list_tools() -> list[Tool]:
             description="Get the full hierarchical task tree for an entire project.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                },
+                "properties": {"project_id": {"type": "string"}},
                 "required": ["project_id"],
             },
         ),
-                Tool(
+        Tool(
             name="task_update",
-            description="Update a task's title, description, or status.",
+            description="Update a task. blocker_reason required for blocked; closure_note or closure doc for completed.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                    "title": {"type": "string", "description": "New title"},
-                    "description": {"type": "string", "description": "New description"},
+                    "task_id": {"type": "string"},
+                    "title": {"type": "string", "minLength": 3},
+                    "description": _DESC_PROP,
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                        "description": "New status",
+                    },
+                    "blocker_reason": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Required when status=blocked",
+                    },
+                    "closure_note": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Required when status=completed and no closure doc exists",
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id"],
+                "required": ["task_id", "api_key"],
             },
         ),
         Tool(
             name="task_move",
-            description="Move a task to a new position or reparent it. "
-                        "Use after_task_id to reorder among siblings.",
+            description="Move or reparent a task. Use after_task_id to reorder siblings.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Task ID to move"},
-                    "after_task_id": {
-                        "type": "string",
-                        "description": "Place this task after this sibling. "
-                                       "Omit to move to the end of the sibling list.",
-                    },
+                    "task_id": {"type": "string"},
+                    "after_task_id": {"type": "string"},
                     "parent_id": {
                         "type": "string",
-                        "description": "New parent task ID. Omit to keep current parent. "
-                                       "Set to empty string to make it a root-level task.",
+                        "description": "New parent. Empty string = root level.",
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id"],
+                "required": ["task_id", "api_key"],
             },
         ),
         Tool(
             name="task_delete",
-            description="Delete a task. Will cascade to delete all subtasks too.",
+            description="Permanently delete a task and subtasks. Prefer status=cancelled when possible.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
+                    "task_id": {"type": "string"},
+                    "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id"],
+                "required": ["task_id", "reason", "api_key"],
             },
         ),
-        # ---- Documentation ----
         Tool(
             name="doc_project_get",
-            description="Get the markdown documentation for a project. Specify doc_type: spec (default), progress, or closure.",
+            description="Get project markdown doc with metadata.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                    "doc_type": {
-                        "type": "string",
-                        "enum": ["spec", "progress", "closure"],
-                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
-                    },
+                    "project_id": {"type": "string"},
+                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="doc_project_update",
-            description="Update the markdown documentation for a project. Specify doc_type: spec (default), progress, or closure.",
+            description="Update project markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "Project ID"},
-                    "content": {"type": "string", "description": "Markdown content"},
-                    "doc_type": {
-                        "type": "string",
-                        "enum": ["spec", "progress", "closure"],
-                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
-                    },
+                    "project_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 50},
+                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "content"],
+                "required": ["project_id", "content", "api_key"],
             },
         ),
         Tool(
             name="doc_task_get",
-            description="Get the markdown documentation for a task. Specify doc_type: spec (default), progress, or closure.",
+            description="Get task markdown doc with metadata.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                    "doc_type": {
-                        "type": "string",
-                        "enum": ["spec", "progress", "closure"],
-                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
-                    },
+                    "task_id": {"type": "string"},
+                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
                 },
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="doc_task_update",
-            description="Update the markdown documentation for a task. Specify doc_type: spec (default), progress, or closure.",
+            description="Update task markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                    "content": {"type": "string", "description": "Markdown content"},
-                    "doc_type": {
-                        "type": "string",
-                        "enum": ["spec", "progress", "closure"],
-                        "description": "Doc type: spec (plan), progress (work log), closure (summary). Default: spec.",
-                    },
+                    "task_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 50},
+                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "content"],
+                "required": ["task_id", "content", "api_key"],
             },
         ),
-        # ---- Comments ----
         Tool(
             name="comment_add",
-            description="Add a comment to a project or task. Comments are append-only and timestamped.",
+            description="Add a comment to a project or task.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "entity_type": {
+                    "entity_type": {"type": "string", "enum": ["project", "task"]},
+                    "entity_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 10},
+                    "author": {"type": "string", "description": "Defaults to agent name"},
+                    "comment_type": {
                         "type": "string",
-                        "enum": ["project", "task"],
-                        "description": "Entity type to comment on",
+                        "enum": ["note", "blocker", "decision", "question"],
                     },
-                    "entity_id": {"type": "string", "description": "Entity ID"},
-                    "content": {"type": "string", "description": "Comment text"},
-                    "author": {"type": "string", "description": "Optional author name"},
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["entity_type", "entity_id", "content"],
+                "required": ["entity_type", "entity_id", "content", "api_key"],
             },
         ),
         Tool(
             name="comment_list",
-            description="List all comments for a project or task, ordered by creation time.",
+            description="List comments for a project or task.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "entity_type": {
-                        "type": "string",
-                        "enum": ["project", "task"],
-                        "description": "Entity type",
-                    },
-                    "entity_id": {"type": "string", "description": "Entity ID"},
+                    "entity_type": {"type": "string", "enum": ["project", "task"]},
+                    "entity_id": {"type": "string"},
+                    "limit": {"type": "integer", "description": "Max comments to return"},
+                    "since": {"type": "string", "description": "ISO timestamp — only comments after this time"},
                 },
                 "required": ["entity_type", "entity_id"],
             },
         ),
-        # ---- Agent & Audit ----
         Tool(
             name="agent_onboard",
-            description="Register a new agent. Returns agent info with plaintext API key (shown once). No auth needed.",
+            description="Register a new agent. Returns API key once — save it immediately.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Agent name"},
-                    "master_name": {"type": "string", "description": "Master/user name"},
+                    "name": {"type": "string"},
+                    "master_name": {"type": "string"},
                 },
                 "required": ["name", "master_name"],
             },
         ),
         Tool(
             name="agent_list",
-            description="List all registered agents. Requires auth.",
+            description="List registered agents. Requires auth.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "api_key": _API_KEY_PROP,
-                },
+                "properties": {"api_key": _API_KEY_PROP},
+                "required": ["api_key"],
             },
         ),
         Tool(
             name="audit_log_get",
-            description="Get audit log entries for a task or project.",
+            description="Get audit log entries. scope=project_with_tasks returns all project+task activity.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "entity_type": {
+                    "entity_type": {"type": "string", "enum": ["task", "project"]},
+                    "entity_id": {"type": "string"},
+                    "scope": {
                         "type": "string",
-                        "enum": ["task", "project"],
-                        "description": "Entity type",
+                        "enum": ["entity", "project_with_tasks"],
+                        "description": "project_with_tasks only valid when entity_type=project",
                     },
-                    "entity_id": {"type": "string", "description": "Entity ID"},
+                    "limit": {"type": "integer", "description": "Max entries (default: 50)"},
                 },
                 "required": ["entity_type", "entity_id"],
             },
@@ -434,80 +520,139 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> CallToolResult:
     try:
-        # ---- Auth check for mutation tools ----
         agent = None
         if name in _MUTATION_TOOLS:
             api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
             if not api_key:
-                return _err("Authentication required. Provide api_key parameter or set TM_API_KEY environment variable.")
+                return _err(
+                    "Authentication required. Provide api_key or set TM_API_KEY.",
+                    code="AUTH_REQUIRED",
+                )
             agent = validate_api_key(api_key)
             if not agent:
-                return _err("Invalid API key. Use agent_onboard tool to register.")
+                return _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
 
         # ---- Projects ----
         if name == "project_create":
-            result = create_project(arguments["name"], arguments.get("description", ""))
+            validated = validate_project_create(arguments)
+            result = create_project(validated["name"], validated["description"])
+            if validated.get("initial_spec"):
+                upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
-            audit = get_audit_log("project", result["id"])
-            result["audit_log"] = audit
-            return _ok(result)
+            enriched = enrich_project(result)
+            enriched["next_steps"] = [
+                "Create root tasks with task_create (include description and initial_spec)",
+                "Write project spec via doc_project_update if initial_spec was omitted",
+            ]
+            return _ok(enriched, tool=name)
 
         elif name == "project_list":
-            result = list_projects()
-            return _ok(result)
+            status = arguments.get("status", "active")
+            status_filter = None if status == "all" else status
+            include_progress = arguments.get("include_progress", True)
+            result = list_projects_enriched(
+                status=status_filter,
+                q=arguments.get("q"),
+                include_progress=include_progress,
+            )
+            return _ok(result, tool=name)
 
         elif name == "project_get":
             result = get_project_progress(arguments["project_id"])
             if not result:
-                return _err(f"Project '{arguments['project_id']}' not found")
-            return _ok(result)
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            result = enrich_project(result)
+            if arguments.get("include_recent_activity"):
+                result["recent_activity"] = get_project_audit_log(arguments["project_id"], limit=10)
+            return _ok(result, tool=name)
+
+        elif name == "project_snapshot":
+            snapshot = build_project_snapshot(arguments["project_id"])
+            if not snapshot:
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            return _ok(snapshot, tool=name)
 
         elif name == "project_update":
             old = get_project(arguments["project_id"])
+            if not old:
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            reason = validate_project_update(arguments, old)
             result = update_project(
                 arguments["project_id"],
                 name=arguments.get("name"),
                 description=arguments.get("description"),
                 status=arguments.get("status"),
             )
-            if not result:
-                return _err(f"Project '{arguments['project_id']}' not found")
-            if old:
-                for field in ("name", "description", "status"):
-                    old_val = old.get(field)
-                    new_val = result.get(field)
-                    if old_val != new_val:
-                        log_audit(agent["name"], agent["master_name"], "project",
-                                  arguments["project_id"], "updated", field,
-                                  str(old_val) if old_val else None,
-                                  str(new_val) if new_val else None)
-            return _ok(result)
+            if reason and arguments.get("status") and old.get("status") != arguments.get("status"):
+                add_comment(
+                    "project", arguments["project_id"],
+                    f"[status_change] {reason}", author=agent["name"],
+                )
+            for field in ("name", "description", "status"):
+                old_val = old.get(field)
+                new_val = result.get(field)
+                if old_val != new_val:
+                    log_audit(agent["name"], agent["master_name"], "project",
+                              arguments["project_id"], "updated", field,
+                              str(old_val) if old_val else None,
+                              str(new_val) if new_val else None)
+            return _ok(enrich_project(result), tool=name)
+
+        elif name == "project_archive":
+            reason = require_text(
+                arguments.get("reason", ""), "reason", MIN_REASON_LEN, "Archive reason"
+            )
+            old = get_project(arguments["project_id"])
+            if not old:
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            result = archive_project(arguments["project_id"])
+            add_comment("project", arguments["project_id"], f"[archived] {reason}", author=agent["name"])
+            log_audit(agent["name"], agent["master_name"], "project",
+                      arguments["project_id"], "updated", "status", old["status"], "archived")
+            return _ok(enrich_project(result), tool=name)
+
+        elif name == "project_restore":
+            old = get_project(arguments["project_id"])
+            if not old:
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            result = update_project(arguments["project_id"], status="active")
+            log_audit(agent["name"], agent["master_name"], "project",
+                      arguments["project_id"], "updated", "status", old["status"], "active")
+            return _ok(enrich_project(result), tool=name)
 
         elif name == "project_delete":
-            ok = delete_project(arguments["project_id"])
-            if not ok:
-                return _err(f"Project '{arguments['project_id']}' not found")
-            log_audit(agent["name"], agent["master_name"], "project",
-                      arguments["project_id"], "deleted")
-            return _ok({"deleted": True})
+            reason = require_text(
+                arguments.get("reason", ""), "reason", MIN_REASON_LEN, "Delete reason"
+            )
+            pid = arguments["project_id"]
+            if not get_project(pid):
+                return _err(f"Project '{pid}' not found", code="NOT_FOUND")
+            add_comment("project", pid, f"[deleted] {reason}", author=agent["name"])
+            delete_project(pid)
+            log_audit(agent["name"], agent["master_name"], "project", pid, "deleted")
+            return _ok({"deleted": True, "project_id": pid}, tool=name)
 
         # ---- Tasks ----
         elif name == "task_create":
-            parent_id = arguments.get("parent_id")
-            after_id = arguments.get("after_task_id")
+            validated = validate_task_create(arguments)
             result = create_task(
                 arguments["project_id"],
-                arguments["title"],
-                arguments.get("description", ""),
-                parent_id=parent_id,
-                after_task_id=after_id,
+                validated["title"],
+                validated["description"],
+                parent_id=validated.get("parent_id"),
+                after_task_id=arguments.get("after_task_id"),
             )
             if not result:
-                return _err(f"Project '{arguments['project_id']}' not found")
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            if validated.get("initial_spec"):
+                upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
-            audit = get_audit_log("task", result["id"])
-            result["audit_log"] = audit
-            return _ok(result)
+            enriched = enrich_task(result)
+            enriched["created_by"] = {
+                "agent_name": agent["name"],
+                "master_name": agent["master_name"],
+            }
+            return _ok(enriched, tool=name)
 
         elif name == "task_list":
             result = list_tasks(
@@ -515,45 +660,56 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 status=arguments.get("status"),
                 parent_id=arguments.get("parent_id"),
             )
-            return _ok(result)
+            if arguments.get("include_enrichment", True):
+                result = enrich_task_list(result)
+            return _ok(result, tool=name)
 
         elif name == "task_get":
             result = get_task(arguments["task_id"])
             if not result:
-                return _err(f"Task '{arguments['task_id']}' not found")
-            return _ok(result)
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
+            return _ok(enrich_task(result), tool=name)
 
         elif name == "task_tree":
             result = get_task_tree(arguments["task_id"])
             if not result:
-                return _err(f"Task '{arguments['task_id']}' not found")
-            return _ok(result)
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
+            return _ok(result, tool=name)
 
         elif name == "task_subtree":
             result = get_task_subtree(arguments["project_id"])
-            return _ok(result)
+            return _ok(result, tool=name)
 
         elif name == "task_update":
             old = get_task(arguments["task_id"])
+            if not old:
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
+            has_closure = get_task_doc_meta(arguments["task_id"], "closure") is not None
+            extras = validate_task_update(arguments, old, has_closure)
+            new_status = arguments.get("status")
+            if new_status == "blocked" and extras.get("blocker_reason"):
+                add_comment(
+                    "task", arguments["task_id"],
+                    f"[blocker] {extras['blocker_reason']}", author=agent["name"],
+                )
+            if new_status == "completed" and extras.get("closure_note"):
+                upsert_task_doc(arguments["task_id"], f"## Summary\n{extras['closure_note']}", doc_type="closure")
             result = update_task(
                 arguments["task_id"],
                 title=arguments.get("title"),
                 description=arguments.get("description"),
-                status=arguments.get("status"),
+                status=new_status,
             )
-            if not result:
-                return _err(f"Task '{arguments['task_id']}' not found")
-            if old:
-                for field in ("title", "description", "status"):
-                    old_val = old.get(field)
-                    new_val = result.get(field)
-                    if old_val != new_val:
-                        action = "status_changed" if field == "status" else "updated"
-                        log_audit(agent["name"], agent["master_name"], "task",
-                                  arguments["task_id"], action, field,
-                                  str(old_val) if old_val else None,
-                                  str(new_val) if new_val else None)
-            return _ok(result)
+            for field in ("title", "description", "status"):
+                old_val = old.get(field)
+                new_val = result.get(field)
+                if old_val != new_val:
+                    action = "status_changed" if field == "status" else "updated"
+                    log_audit(agent["name"], agent["master_name"], "task",
+                              arguments["task_id"], action, field,
+                              str(old_val) if old_val else None,
+                              str(new_val) if new_val else None)
+            return _ok(enrich_task(result), tool=name)
 
         elif name == "task_move":
             after = arguments.get("after_task_id")
@@ -563,117 +719,128 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             old = get_task(arguments["task_id"])
             result = move_task(arguments["task_id"], after_task_id=after, parent_id=parent)
             if not result:
-                return _err(f"Task '{arguments['task_id']}' not found")
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             if old and old.get("parent_id") != result.get("parent_id"):
                 log_audit(agent["name"], agent["master_name"], "task",
                           arguments["task_id"], "moved", "parent_id",
                           old.get("parent_id"), result.get("parent_id"))
-            return _ok(result)
+            return _ok(enrich_task(result), tool=name)
 
         elif name == "task_delete":
-            ok = delete_task(arguments["task_id"])
-            if not ok:
-                return _err(f"Task '{arguments['task_id']}' not found")
-            log_audit(agent["name"], agent["master_name"], "task",
-                      arguments["task_id"], "deleted")
-            return _ok({"deleted": True})
+            reason = validate_task_delete(arguments)
+            tid = arguments["task_id"]
+            if not get_task(tid):
+                return _err(f"Task '{tid}' not found", code="NOT_FOUND")
+            add_comment("task", tid, f"[deleted] {reason}", author=agent["name"])
+            delete_task(tid)
+            log_audit(agent["name"], agent["master_name"], "task", tid, "deleted")
+            return _ok({"deleted": True, "task_id": tid}, tool=name)
 
         # ---- Documentation ----
         elif name == "doc_project_get":
-            content = get_project_doc(
-                arguments["project_id"],
-                doc_type=arguments.get("doc_type", "spec"),
-            )
-            return _ok({
-                "project_id": arguments["project_id"],
-                "doc_type": arguments.get("doc_type", "spec"),
-                "content": content,
-            })
+            doc_type = arguments.get("doc_type", "spec")
+            meta = get_project_doc_meta(arguments["project_id"], doc_type=doc_type)
+            if not get_project(arguments["project_id"]):
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
+            return _ok(enrich_doc_response("project", arguments["project_id"], doc_type, meta), tool=name)
 
         elif name == "doc_project_update":
-            ok = upsert_project_doc(
-                arguments["project_id"],
-                arguments["content"],
-                doc_type=arguments.get("doc_type", "spec"),
-            )
+            doc_type = arguments.get("doc_type", "spec")
+            content = validate_doc_content(arguments["content"], doc_type)
+            ok = upsert_project_doc(arguments["project_id"], content, doc_type=doc_type)
             if not ok:
-                return _err(f"Project '{arguments['project_id']}' not found")
+                return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
             log_audit(agent["name"], agent["master_name"], "project",
-                      arguments["project_id"], "doc_updated",
-                      f"doc_{arguments.get('doc_type', 'spec')}")
-            return _ok({"updated": True, "doc_type": arguments.get("doc_type", "spec")})
+                      arguments["project_id"], "doc_updated", f"doc_{doc_type}")
+            meta = get_project_doc_meta(arguments["project_id"], doc_type)
+            return _ok({
+                "updated": True,
+                "doc_type": doc_type,
+                "updated_at": meta["updated_at"] if meta else None,
+                "char_count": len(content),
+            }, tool=name)
 
         elif name == "doc_task_get":
-            content = get_task_doc(
-                arguments["task_id"],
-                doc_type=arguments.get("doc_type", "spec"),
-            )
-            return _ok({
-                "task_id": arguments["task_id"],
-                "doc_type": arguments.get("doc_type", "spec"),
-                "content": content,
-            })
+            doc_type = arguments.get("doc_type", "spec")
+            if not get_task(arguments["task_id"]):
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
+            meta = get_task_doc_meta(arguments["task_id"], doc_type=doc_type)
+            return _ok(enrich_doc_response("task", arguments["task_id"], doc_type, meta), tool=name)
 
         elif name == "doc_task_update":
-            ok = upsert_task_doc(
-                arguments["task_id"],
-                arguments["content"],
-                doc_type=arguments.get("doc_type", "spec"),
-            )
+            doc_type = arguments.get("doc_type", "spec")
+            content = validate_doc_content(arguments["content"], doc_type)
+            ok = upsert_task_doc(arguments["task_id"], content, doc_type=doc_type)
             if not ok:
-                return _err(f"Task '{arguments['task_id']}' not found")
+                return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             log_audit(agent["name"], agent["master_name"], "task",
-                      arguments["task_id"], "doc_updated",
-                      f"doc_{arguments.get('doc_type', 'spec')}")
-            return _ok({"updated": True, "doc_type": arguments.get("doc_type", "spec")})
+                      arguments["task_id"], "doc_updated", f"doc_{doc_type}")
+            meta = get_task_doc_meta(arguments["task_id"], doc_type)
+            return _ok({
+                "updated": True,
+                "doc_type": doc_type,
+                "updated_at": meta["updated_at"] if meta else None,
+                "char_count": len(content),
+            }, tool=name)
 
         # ---- Comments ----
         elif name == "comment_add":
+            content = validate_comment_content(arguments["content"])
+            comment_type = arguments.get("comment_type")
+            if comment_type:
+                content = f"[{comment_type}] {content}"
+            author = arguments.get("author") or agent["name"]
             result = add_comment(
                 arguments["entity_type"],
                 arguments["entity_id"],
-                arguments["content"],
-                author=arguments.get("author", ""),
+                content,
+                author=author,
             )
             log_audit(agent["name"], agent["master_name"],
                       arguments["entity_type"], arguments["entity_id"], "comment_added")
-            return _ok(result)
+            return _ok(result, tool=name)
 
         elif name == "comment_list":
             result = list_comments(
                 arguments["entity_type"],
                 arguments["entity_id"],
+                limit=arguments.get("limit"),
+                since=arguments.get("since"),
             )
-            return _ok(result)
+            return _ok(result, tool=name)
 
         # ---- Agent & Audit ----
         elif name == "agent_onboard":
             result = onboard_agent(arguments["name"], arguments["master_name"])
             if not result:
-                return _err(f"Agent '{arguments['name']}' already exists.")
+                return _err(f"Agent '{arguments['name']}' already exists.", code="CONFLICT")
             return _ok({
                 "agent_id": result["id"],
                 "agent_name": result["name"],
                 "master_name": result["master_name"],
                 "api_key": result["api_key"],
                 "created_at": result["created_at"],
-            })
+            }, tool=name)
 
         elif name == "agent_list":
-            api_key = arguments.get("api_key")
-            if not api_key or not validate_api_key(api_key):
-                return _err("Authentication required.")
-            return _ok(list_agents())
+            return _ok(list_agents(), tool=name)
 
         elif name == "audit_log_get":
-            entries = get_audit_log(arguments["entity_type"], arguments["entity_id"])
-            return _ok(entries)
+            scope = arguments.get("scope", "entity")
+            limit = arguments.get("limit", 50)
+            if scope == "project_with_tasks" and arguments["entity_type"] == "project":
+                entries = get_project_audit_log(arguments["entity_id"], limit=limit)
+            else:
+                entries = get_audit_log(arguments["entity_type"], arguments["entity_id"])[:limit]
+            return _ok(entries, tool=name)
 
         else:
-            return _err(f"Unknown tool: {name}")
+            return _err(f"Unknown tool: {name}", code="UNKNOWN_TOOL")
 
+    except ValidationError as e:
+        return _err(e.message, code=e.code, field=e.field)
     except Exception as e:
-        return _err(f"Error executing {name}: {str(e)}")
+        return _err(f"Error executing {name}: {str(e)}", code="INTERNAL_ERROR")
 
 
 # ---------------------------------------------------------------------------
