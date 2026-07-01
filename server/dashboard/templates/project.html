@@ -1,305 +1,156 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ project.name }} - AI Task Manager</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    {% include "includes/markdown_assets.html" %}
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="bg-white border-b border-gray-200 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16 items-center">
-                <div class="flex items-center gap-4">
-                    <a href="/" class="text-gray-400 hover:text-gray-600">&larr; Projects</a>
-                    <h1 class="text-xl font-bold text-gray-900">{{ project.name }}</h1>
-                </div>
-                <div class="flex items-center gap-3">
-                    <a href="/projects/{{ project.id }}/docs"
-                       class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                        All Docs
-                    </a>
-                    <a href="/projects/{{ project.id }}/doc"
-                       class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                        Docs
-                    </a>
-                    <a href="/projects/{{ project.id }}/audit"
-                       class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                        Audit
-                    </a>
-                    {% if project.status == 'archived' %}
-                    <form action="/projects/{{ project.id }}/restore" method="POST">
-                        <button type="submit"
-                                class="px-3 py-1.5 text-sm border border-blue-300 text-blue-600 rounded-md hover:bg-blue-50 transition-colors">
-                            Restore
-                        </button>
-                    </form>
-                    {% else %}
-                    <form action="/projects/{{ project.id }}/archive" method="POST"
-                          onsubmit="return confirm('Archive this project? You can restore it later.')">
-                        <button type="submit"
-                                class="px-3 py-1.5 text-sm border border-red-300 text-red-600 rounded-md hover:bg-red-50 transition-colors">
-                            Archive
-                        </button>
-                    </form>
-                    {% endif %}
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                          style="background-color: {{ status_color(project.status) }}20; color: {{ status_color(project.status) }}">
-                        {{ project.status }}
-                    </span>
-                </div>
+{% extends "base.html" %}
+
+{% block title %}{{ project.name }} - AI Task Manager{% endblock %}
+
+{% block nav %}{% include "includes/nav_project.html" %}{% endblock %}
+
+{% block head_extra %}
+<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/task-tree.js" defer></script>
+<script src="/static/js/task-filters.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
+    <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-medium text-gray-700">Progress</h2>
+        <span class="text-sm text-gray-500">{{ project.completed_tasks }}/{{ project.total_tasks }} tasks ({{ project.progress_pct }}%)</span>
+    </div>
+    <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
+        <div class="h-3 rounded-full transition-all"
+             style="width: {{ project.progress_pct }}%; background-color: #22c55e"></div>
+    </div>
+    <div class="flex flex-wrap gap-4">
+        {% for s, count in project.by_status.items() %}
+            <div class="flex items-center gap-1.5 text-sm">
+                <span class="w-2.5 h-2.5 rounded-full" style="background-color: {{ status_color(s) }}"></span>
+                <span class="text-gray-600 capitalize">{{ s }}</span>
+                <span class="font-medium text-gray-900">{{ count }}</span>
+            </div>
+        {% endfor %}
+    </div>
+    {% if project.description %}
+        <p class="mt-4 text-sm text-gray-600">{{ project.description }}</p>
+    {% endif %}
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Tasks</h2>
+        <div class="flex flex-wrap items-center gap-2">
+            <label for="taskSearch" class="sr-only">Search tasks</label>
+            <input type="text" id="taskSearch" placeholder="Search tasks..."
+                   class="px-3 py-1.5 text-sm border border-gray-300 rounded-md w-full sm:w-48 focus:ring-2 focus:ring-blue-500">
+            <button type="button" onclick="document.getElementById('newTaskForm').classList.toggle('hidden')"
+                    class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
+                + Add Task
+            </button>
+        </div>
+    </div>
+
+    <div class="flex gap-2 mb-4 flex-wrap" id="statusFilters" role="group" aria-label="Filter tasks by status">
+        <button type="button" data-status="all" aria-pressed="true"
+                class="status-filter px-2.5 py-1 rounded-full text-xs font-medium capitalize bg-blue-100 text-blue-800 ring-2 ring-blue-400">
+            All
+        </button>
+        {% for s in statuses %}
+        <button type="button" data-status="{{ s }}" aria-pressed="false"
+                class="status-filter px-2.5 py-1 rounded-full text-xs font-medium capitalize"
+                style="background-color: {{ status_color(s) }}20; color: {{ status_color(s) }}">
+            {{ s }}
+        </button>
+        {% endfor %}
+    </div>
+    <p id="filterCount" class="text-xs text-gray-400 mb-4 hidden" aria-live="polite"></p>
+
+    <form id="newTaskForm" action="/projects/{{ project.id }}/tasks/create" method="POST"
+          class="hidden mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+                <label for="new-task-title" class="block text-xs font-medium text-gray-700 mb-1">Title</label>
+                <input type="text" name="title" id="new-task-title" required
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            </div>
+            <div>
+                <label for="new-task-desc" class="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                <input type="text" name="description" id="new-task-desc"
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            </div>
+            <div class="flex items-end gap-2">
+                <input type="hidden" name="parent_id" value="">
+                <button type="submit"
+                        class="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+                    Create
+                </button>
+                <button type="button" onclick="this.closest('form').classList.add('hidden')"
+                        class="px-3 py-2 text-sm text-gray-600 hover:text-gray-800">
+                    Cancel
+                </button>
             </div>
         </div>
-    </nav>
+    </form>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Progress bar -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
-            <div class="flex items-center justify-between mb-2">
-                <h2 class="text-sm font-medium text-gray-700">Progress</h2>
-                <span class="text-sm text-gray-500">{{ project.completed_tasks }}/{{ project.total_tasks }} tasks ({{ project.progress_pct }}%)</span>
-            </div>
-            <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
-                <div class="h-3 rounded-full transition-all"
-                     style="width: {{ project.progress_pct }}%; background-color: #22c55e"></div>
-            </div>
-            <div class="flex gap-4">
-                {% for s, count in project.by_status.items() %}
-                    <div class="flex items-center gap-1.5 text-sm">
-                        <span class="w-2.5 h-2.5 rounded-full" style="background-color: {{ status_color(s) }}"></span>
-                        <span class="text-gray-600 capitalize">{{ s }}</span>
-                        <span class="font-medium text-gray-900">{{ count }}</span>
-                    </div>
+    {% if task_tree %}
+        <div class="space-y-2" id="taskList">
+            {% for task in task_tree %}
+                {% include "task_item.html" %}
+            {% endfor %}
+        </div>
+        <p id="noResults" class="hidden text-sm text-gray-500 text-center py-8">No tasks match your search or filter.</p>
+    {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No tasks yet. Create one to start tracking progress.</p>
+    {% endif %}
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-8">
+    <div class="border-b border-gray-200">
+        <div class="flex flex-wrap items-center justify-between pr-4">
+            <div class="flex" role="tablist" aria-label="Documentation preview">
+                {% for dt, doc_content in [('spec', doc_spec), ('progress', doc_progress), ('closure', doc_closure)] %}
+                <a href="/projects/{{ project.id }}/doc?type={{ dt }}"
+                   role="tab"
+                   class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 capitalize">
+                    {{ dt }}
+                </a>
                 {% endfor %}
             </div>
-            {% if project.description %}
-                <p class="mt-4 text-sm text-gray-600">{{ project.description }}</p>
-            {% endif %}
+            <a href="/projects/{{ project.id }}/docs" class="text-sm text-blue-600 hover:underline py-2">View all docs &rarr;</a>
         </div>
-
-        <!-- Task tree -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <h2 class="text-lg font-semibold text-gray-900">Tasks</h2>
-                <div class="flex flex-wrap items-center gap-2">
-                    <input type="text" id="taskSearch" placeholder="Search tasks..."
-                           class="px-3 py-1.5 text-sm border border-gray-300 rounded-md w-48 focus:ring-2 focus:ring-blue-500">
-                    <button onclick="document.getElementById('newTaskForm').classList.toggle('hidden')"
-                            class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
-                        + Add Task
-                    </button>
-                </div>
-            </div>
-
-            <!-- Status filters -->
-            <div class="flex gap-2 mb-4 flex-wrap" id="statusFilters">
-                <button type="button" data-status="all"
-                        class="status-filter px-2.5 py-1 rounded-full text-xs font-medium capitalize bg-blue-100 text-blue-800 ring-2 ring-blue-400">
-                    All
-                </button>
-                {% for s in statuses %}
-                <button type="button" data-status="{{ s }}"
-                        class="status-filter px-2.5 py-1 rounded-full text-xs font-medium capitalize"
-                        style="background-color: {{ status_color(s) }}20; color: {{ status_color(s) }}">
-                    {{ s }}
-                </button>
-                {% endfor %}
-            </div>
-            <p id="filterCount" class="text-xs text-gray-400 mb-4 hidden"></p>
-
-            <!-- New Task Form -->
-            <form id="newTaskForm" action="/projects/{{ project.id }}/tasks/create" method="POST"
-                  class="hidden mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-1">Title</label>
-                        <input type="text" name="title" required
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-1">Description</label>
-                        <input type="text" name="description"
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
-                    </div>
-                    <div class="flex items-end gap-2">
-                        <input type="hidden" name="parent_id" value="">
-                        <button type="submit"
-                                class="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-                            Create
-                        </button>
-                        <button type="button" onclick="this.closest('form').classList.add('hidden')"
-                                class="px-3 py-2 text-sm text-gray-600 hover:text-gray-800">
-                            Cancel
-                        </button>
-                    </div>
-                </div>
-            </form>
-
-            <!-- Task list -->
-            {% if task_tree %}
-                <div class="space-y-2" id="taskList">
-                    {% for task in task_tree %}
-                        {% include "task_item.html" %}
-                    {% endfor %}
-                </div>
-                <p id="noResults" class="hidden text-sm text-gray-500 text-center py-8">No tasks match your search or filter.</p>
-            {% else %}
-                <p class="text-sm text-gray-500 text-center py-8">No tasks yet. Create one to start tracking progress.</p>
-            {% endif %}
-        </div>
-
-        <!-- Documentation tabs -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-8">
-            <div class="border-b border-gray-200">
-                <div class="flex items-center justify-between pr-4">
-                    <div class="flex">
-                        {% for dt in ['spec', 'progress', 'closure'] %}
-                        <a href="/projects/{{ project.id }}/doc?type={{ dt }}"
-                           class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == 'spec' %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
-                            {{ dt }}
-                        </a>
-                        {% endfor %}
-                    </div>
-                    <a href="/projects/{{ project.id }}/docs" class="text-sm text-blue-600 hover:underline">View all docs &rarr;</a>
-                </div>
-            </div>
-            <div class="p-6">
-                {% if doc_spec %}
-                {% with content=doc_spec %}
+    </div>
+    <div class="p-6">
+        <p class="text-xs text-gray-500 mb-4">Quick preview — open Docs to view or edit each type.</p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {% for dt, doc_content in [('spec', doc_spec), ('progress', doc_progress), ('closure', doc_closure)] %}
+            <div class="border border-gray-200 rounded-lg p-4">
+                <h3 class="text-sm font-medium text-gray-700 capitalize mb-2">{{ dt }}</h3>
+                {% if doc_content %}
+                {% with content=doc_content %}
                     {% include "includes/markdown_block.html" %}
                 {% endwith %}
                 {% else %}
-                <p class="text-sm text-gray-400 italic">No spec document yet.</p>
+                <p class="text-sm text-gray-400 italic">No {{ dt }} yet.</p>
                 {% endif %}
-                <a href="/projects/{{ project.id }}/doc?type=spec" class="mt-3 inline-block text-sm text-blue-600 hover:underline">Edit spec &rarr;</a>
+                <a href="/projects/{{ project.id }}/doc?type={{ dt }}" class="mt-2 inline-block text-xs text-blue-600 hover:underline">Edit {{ dt }} &rarr;</a>
             </div>
+            {% endfor %}
         </div>
+    </div>
+</div>
 
-        <!-- Comments -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
-
-            <form action="/comments/project/{{ project.id }}" method="POST" class="mb-6">
-                <div class="flex gap-2">
-                    <input type="text" name="author" placeholder="Your name" class="w-32 px-2 py-1.5 text-sm border border-gray-300 rounded">
-                    <input type="text" name="content" placeholder="Add a comment..." required class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded">
-                    <button type="submit" class="px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700">Comment</button>
-                </div>
-            </form>
-
-            <div class="space-y-3">
-                {% for c in comments %}
-                <div class="border-l-2 border-gray-200 pl-3">
-                    <div class="flex items-center gap-2 text-xs text-gray-500">
-                        {% if c.author %}
-                        <span class="font-medium text-gray-700">{{ c.author }}</span>
-                        {% endif %}
-                        <span>{{ c.created_at }}</span>
-                    </div>
-                    <p class="text-sm text-gray-700 mt-1">{{ c.content }}</p>
-                </div>
-                {% else %}
-                <p class="text-sm text-gray-400 italic">No comments yet.</p>
-                {% endfor %}
-            </div>
-        </div>
-    </main>
-
-    <script>
-    let activeStatuses = new Set();
-
-    function toggleSubtasks(taskId) {
-        const container = document.getElementById('subtasks-' + taskId);
-        const chevron = document.getElementById('chevron-' + taskId);
-        const btn = document.getElementById('toggle-' + taskId);
-        if (!container) return;
-        const expanded = container.classList.toggle('hidden') === false;
-        if (chevron) chevron.style.transform = expanded ? 'rotate(90deg)' : '';
-        if (btn) btn.setAttribute('aria-expanded', expanded);
-    }
-
-    function taskMatchesFilter(item) {
-        const query = (document.getElementById('taskSearch')?.value || '').toLowerCase().trim();
-        const title = item.dataset.title || '';
-        const desc = item.dataset.description || '';
-        const status = item.dataset.status || '';
-
-        const matchesSearch = !query || title.includes(query) || desc.includes(query);
-        const matchesStatus = activeStatuses.size === 0 || activeStatuses.has(status);
-        return matchesSearch && matchesStatus;
-    }
-
-    function taskSubtreeMatches(item) {
-        if (taskMatchesFilter(item)) return true;
-        const children = item.querySelector(':scope > .task-children');
-        if (!children) return false;
-        return Array.from(children.querySelectorAll('.task-item')).some(taskSubtreeMatches);
-    }
-
-    function applyTaskFilters() {
-        const items = document.querySelectorAll('#taskList .task-item');
-        let visibleCount = 0;
-
-        items.forEach(item => {
-            const show = taskSubtreeMatches(item);
-            item.style.display = show ? '' : 'none';
-            if (show) visibleCount++;
-
-            if (show && item.querySelector(':scope > .task-children')) {
-                const query = (document.getElementById('taskSearch')?.value || '').trim();
-                const selfMatch = taskMatchesFilter(item);
-                if (!selfMatch && query) {
-                    const container = item.querySelector(':scope > .task-children');
-                    const chevron = document.getElementById('chevron-' + item.dataset.taskId);
-                    const btn = document.getElementById('toggle-' + item.dataset.taskId);
-                    if (container) {
-                        container.classList.remove('hidden');
-                        if (chevron) chevron.style.transform = 'rotate(90deg)';
-                        if (btn) btn.setAttribute('aria-expanded', 'true');
-                    }
-                }
-            }
-        });
-
-        const noResults = document.getElementById('noResults');
-        const filterCount = document.getElementById('filterCount');
-        if (noResults) noResults.classList.toggle('hidden', visibleCount > 0);
-        if (filterCount) {
-            const query = document.getElementById('taskSearch')?.value?.trim();
-            if (query || activeStatuses.size > 0) {
-                filterCount.textContent = visibleCount + ' task(s) visible';
-                filterCount.classList.remove('hidden');
-            } else {
-                filterCount.classList.add('hidden');
-            }
-        }
-    }
-
-    document.getElementById('taskSearch')?.addEventListener('input', applyTaskFilters);
-
-    document.querySelectorAll('.status-filter').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const status = btn.dataset.status;
-            if (status === 'all') {
-                activeStatuses.clear();
-                document.querySelectorAll('.status-filter').forEach(b => {
-                    b.classList.remove('ring-2', 'ring-blue-400', 'bg-blue-100', 'text-blue-800');
-                });
-                btn.classList.add('ring-2', 'ring-blue-400', 'bg-blue-100', 'text-blue-800');
-            } else {
-                document.querySelector('.status-filter[data-status="all"]')?.classList.remove('ring-2', 'ring-blue-400', 'bg-blue-100', 'text-blue-800');
-                if (activeStatuses.has(status)) {
-                    activeStatuses.delete(status);
-                    btn.classList.remove('ring-2', 'ring-blue-400');
-                } else {
-                    activeStatuses.add(status);
-                    btn.classList.add('ring-2', 'ring-blue-400');
-                }
-            }
-            applyTaskFilters();
-        });
-    });
-    </script>
-</body>
-</html>
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
+    {% with entity_type='project', entity_id=project.id, htmx=true %}
+        {% include "includes/comment_form.html" %}
+    {% endwith %}
+    <div class="space-y-3" id="comments-list-project-{{ project.id }}">
+        {% for c in comments %}
+            {% include "includes/comment_item.html" %}
+        {% else %}
+        <p class="text-sm text-gray-400 italic" id="no-comments-project-{{ project.id }}">No comments yet.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

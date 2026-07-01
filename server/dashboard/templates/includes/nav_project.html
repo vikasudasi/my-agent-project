@@ -1,0 +1,44 @@
+<nav class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap justify-between gap-2 min-h-16 py-2 items-center">
+            <div class="flex items-center gap-2 sm:gap-4 min-w-0 flex-1">
+                <a href="/" class="text-gray-400 hover:text-gray-600 shrink-0 text-sm sm:text-base">&larr; Projects</a>
+                <h1 class="text-lg sm:text-xl font-bold text-gray-900 truncate">{{ project.name }}</h1>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="/projects/{{ project.id }}/docs"
+                   class="px-2 sm:px-3 py-1.5 text-xs sm:text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    All Docs
+                </a>
+                <a href="/projects/{{ project.id }}/doc"
+                   class="px-2 sm:px-3 py-1.5 text-xs sm:text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    Docs
+                </a>
+                <a href="/projects/{{ project.id }}/audit"
+                   class="px-2 sm:px-3 py-1.5 text-xs sm:text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    Audit
+                </a>
+                {% if project.status == 'archived' %}
+                <form action="/projects/{{ project.id }}/restore" method="POST">
+                    <button type="submit"
+                            class="px-2 sm:px-3 py-1.5 text-xs sm:text-sm border border-blue-300 text-blue-600 rounded-md hover:bg-blue-50 transition-colors">
+                        Restore
+                    </button>
+                </form>
+                {% else %}
+                <form action="/projects/{{ project.id }}/archive" method="POST"
+                      onsubmit="return confirm('Archive this project? You can restore it later.')">
+                    <button type="submit"
+                            class="px-2 sm:px-3 py-1.5 text-xs sm:text-sm border border-red-300 text-red-600 rounded-md hover:bg-red-50 transition-colors">
+                        Archive
+                    </button>
+                </form>
+                {% endif %}
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                      style="background-color: {{ status_color(project.status) }}20; color: {{ status_color(project.status) }}">
+                    {{ project.status }}
+                </span>
+            </div>
+        </div>
+    </div>
+</nav>

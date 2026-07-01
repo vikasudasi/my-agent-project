@@ -1,72 +1,70 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Documentation - {{ project.name }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    {% include "includes/markdown_assets.html" %}
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="bg-white border-b border-gray-200 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16 items-center">
-                <div class="flex items-center gap-4">
-                    <a href="/projects/{{ project.id }}" class="text-gray-400 hover:text-gray-600">&larr; {{ project.name }}</a>
-                    <h1 class="text-xl font-bold text-gray-900">Documentation</h1>
-                </div>
-                <span class="text-sm text-gray-500">Read-only</span>
-            </div>
-        </div>
-    </nav>
+{% extends "base.html" %}
 
-    <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Doc type tabs -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
-            <div class="border-b border-gray-200">
-                <div class="flex">
-                    {% for dt in ['spec', 'progress', 'closure'] %}
-                    <a href="/projects/{{ project.id }}/docs?type={{ dt }}"
-                       class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
-                        {{ dt }}
-                    </a>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
+{% block title %}Documentation - {{ project.name }}{% endblock %}
 
-        <!-- Project-level doc -->
-        <section class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-lg font-semibold text-gray-900">Project: {{ project.name }}</h2>
-                <a href="/projects/{{ project.id }}/doc?type={{ doc_type }}"
-                   class="text-sm text-blue-600 hover:underline">Edit</a>
+{% block main_class %}max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8{% endblock %}
+
+{% block nav %}
+<nav class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16 items-center">
+            <div class="flex items-center gap-4 min-w-0">
+                <a href="/projects/{{ project.id }}" class="text-gray-400 hover:text-gray-600 shrink-0">&larr; {{ project.name }}</a>
+                <h1 class="text-xl font-bold text-gray-900">Documentation</h1>
             </div>
-            {% if hub.project_doc %}
-            <p class="text-xs text-gray-400 mb-3">Updated {{ hub.project_doc.updated_at }}</p>
-            {% with content=hub.project_doc.content %}
-                {% include "includes/markdown_block.html" %}
+            <span class="text-sm text-gray-500 shrink-0">Read-only hub</span>
+        </div>
+    </div>
+</nav>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/docs-accordion.js" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+    <div class="border-b border-gray-200">
+        <div class="flex">
+            {% for dt in ['spec', 'progress', 'closure'] %}
+            <a href="/projects/{{ project.id }}/docs?type={{ dt }}"
+               class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
+                {{ dt }}
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<section class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Project: {{ project.name }}</h2>
+        <a href="/projects/{{ project.id }}/doc?type={{ doc_type }}"
+           class="text-sm text-blue-600 hover:underline">Edit</a>
+    </div>
+    {% if hub.project_doc %}
+    <p class="text-xs text-gray-400 mb-3">Updated {{ hub.project_doc.updated_at }}</p>
+    {% with content=hub.project_doc.content %}
+        {% include "includes/markdown_block.html" %}
+    {% endwith %}
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No {{ doc_type }} document for this project.</p>
+    {% endif %}
+</section>
+
+<section class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-2">Task documentation</h2>
+    <p class="text-sm text-gray-500 mb-6">Expand a task to view its {{ doc_type }} document.</p>
+    {% if hub.task_tree %}
+    <div class="space-y-2">
+        {% for task in hub.task_tree %}
+            {% with level=0 %}
+                {% include "includes/doc_tree_item.html" %}
             {% endwith %}
-            {% else %}
-            <p class="text-sm text-gray-400 italic">No {{ doc_type }} document for this project.</p>
-            {% endif %}
-        </section>
-
-        <!-- Task docs tree -->
-        <section class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 class="text-lg font-semibold text-gray-900 mb-6">Task documentation</h2>
-            {% if hub.task_tree %}
-            <div class="space-y-2">
-                {% for task in hub.task_tree %}
-                    {% with level=0 %}
-                        {% include "includes/doc_tree_item.html" %}
-                    {% endwith %}
-                {% endfor %}
-            </div>
-            {% else %}
-            <p class="text-sm text-gray-400 italic">No tasks in this project yet.</p>
-            {% endif %}
-        </section>
-    </main>
-</body>
-</html>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No tasks in this project yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

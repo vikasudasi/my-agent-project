@@ -1,127 +1,123 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} - Documentation</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    {% include "includes/markdown_assets.html" %}
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="bg-white border-b border-gray-200 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16 items-center">
-                <div class="flex items-center gap-4">
-                    <a href="/projects/{{ project_id }}" class="text-gray-400 hover:text-gray-600">&larr; Back</a>
-                    <h1 class="text-xl font-bold text-gray-900 truncate">{{ title }}</h1>
-                </div>
-                <span class="text-sm text-gray-500 capitalize">{{ entity_type }} documentation</span>
-            </div>
-        </div>
-    </nav>
+{% extends "base.html" %}
 
-    <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Doc type tabs -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
-            <div class="border-b border-gray-200 flex items-center justify-between">
-                <div class="flex">
-                    {% for dt in ['spec', 'progress', 'closure'] %}
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ dt }}{% if mode == 'edit' %}&mode=edit{% endif %}"
-                       class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
-                        {{ dt }}
-                    </a>
-                    {% endfor %}
-                </div>
-                <div class="flex gap-1 pr-2">
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
-                       class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode != 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
-                        View
-                    </a>
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
-                       class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode == 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
-                        Edit
-                    </a>
-                </div>
-            </div>
-        </div>
+{% block title %}{{ title }} - Documentation{% endblock %}
 
-        {% if mode == 'edit' %}
-        <!-- Editor -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <form action="/{{ entity_type }}s/{{ entity_id }}/doc" method="POST">
-                <input type="hidden" name="doc_type" value="{{ doc_type }}">
-                <div class="flex items-center justify-between mb-4">
-                    <h2 class="text-sm font-medium text-gray-700 capitalize">Edit {{ doc_type }}</h2>
-                    {% if doc_meta %}
-                    <span class="text-xs text-gray-400">Last saved {{ doc_meta.updated_at }}</span>
-                    {% endif %}
-                </div>
-                <div class="mb-4">
-                    <textarea name="content" rows="20"
-                              class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                              placeholder="Write markdown documentation here...">{{ content }}</textarea>
-                </div>
-                <div class="flex items-center gap-3">
-                    <button type="submit"
-                            class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-                        Save {{ doc_type }}
-                    </button>
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
-                       class="text-sm text-gray-600 hover:text-gray-800">
-                        Cancel
-                    </a>
-                </div>
-            </form>
-        </div>
-        {% else %}
-        <!-- Read view -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-sm font-medium text-gray-700 capitalize">{{ doc_type }} document</h2>
-                <div class="flex items-center gap-3">
-                    {% if doc_meta %}
-                    <span class="text-xs text-gray-400">Updated {{ doc_meta.updated_at }}</span>
-                    {% endif %}
-                    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
-                       class="text-sm text-blue-600 hover:underline">Edit</a>
-                </div>
+{% block head_extra %}
+{% if mode == 'edit' %}
+    {% include "includes/markdown_preview_assets.html" %}
+{% endif %}
+<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+{% endblock %}
+
+{% block main_class %}max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8{% endblock %}
+
+{% block nav %}
+<nav class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16 items-center">
+            <div class="flex items-center gap-4 min-w-0">
+                <a href="/projects/{{ project_id }}" class="text-gray-400 hover:text-gray-600 shrink-0">&larr; Back</a>
+                <h1 class="text-xl font-bold text-gray-900 truncate">{{ title }}</h1>
             </div>
-            {% if content %}
-            {% with content=content %}
-                {% include "includes/markdown_block.html" %}
-            {% endwith %}
-            {% else %}
-            <p class="text-sm text-gray-400 italic">No {{ doc_type }} document yet.</p>
+            <span class="text-sm text-gray-500 capitalize shrink-0">{{ entity_type }} documentation</span>
+        </div>
+    </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+    <div class="border-b border-gray-200 flex flex-wrap items-center justify-between">
+        <div class="flex">
+            {% for dt in ['spec', 'progress', 'closure'] %}
+            <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ dt }}{% if mode == 'edit' %}&mode=edit{% endif %}"
+               class="px-4 py-2 text-sm font-medium border-b-2 {% if dt == doc_type %}border-blue-600 text-blue-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} capitalize">
+                {{ dt }}
+            </a>
+            {% endfor %}
+        </div>
+        <div class="flex gap-1 p-2">
+            <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
+               class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode != 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                View
+            </a>
             <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
-               class="mt-3 inline-block text-sm text-blue-600 hover:underline">Write {{ doc_type }} &rarr;</a>
+               class="px-3 py-1.5 text-xs font-medium rounded-md {% if mode == 'edit' %}bg-blue-100 text-blue-800{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                Edit
+            </a>
+        </div>
+    </div>
+</div>
+
+{% if mode == 'edit' %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <form action="/{{ entity_type }}s/{{ entity_id }}/doc" method="POST">
+        <input type="hidden" name="doc_type" value="{{ doc_type }}">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-medium text-gray-700 capitalize">Edit {{ doc_type }}</h2>
+            {% if doc_meta %}
+            <span class="text-xs text-gray-400">Last saved {{ doc_meta.updated_at }}</span>
             {% endif %}
         </div>
-        {% endif %}
-
-        <!-- Comments -->
-        <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
-            <form action="/comments/{{ entity_type }}/{{ entity_id }}" method="POST" class="mb-6">
-                <div class="flex gap-2">
-                    <input type="text" name="author" placeholder="Your name" class="w-32 px-2 py-1.5 text-sm border border-gray-300 rounded">
-                    <input type="text" name="content" placeholder="Add a comment..." required class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded">
-                    <button type="submit" class="px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700">Comment</button>
-                </div>
-            </form>
-            <div class="space-y-3">
-                {% for c in comments %}
-                <div class="border-l-2 border-gray-200 pl-3">
-                    <div class="flex items-center gap-2 text-xs text-gray-500">
-                        {% if c.author %}<span class="font-medium text-gray-700">{{ c.author }}</span>{% endif %}
-                        <span>{{ c.created_at }}</span>
-                    </div>
-                    <p class="text-sm text-gray-700 mt-1">{{ c.content }}</p>
-                </div>
-                {% else %}
-                <p class="text-sm text-gray-400 italic">No comments yet.</p>
-                {% endfor %}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+            <div>
+                <label for="doc-editor" class="block text-xs font-medium text-gray-700 mb-1">Markdown</label>
+                <textarea name="content" id="doc-editor" rows="20" data-preview="doc-preview"
+                          class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Write markdown documentation here...">{{ content }}</textarea>
+            </div>
+            <div>
+                <span class="block text-xs font-medium text-gray-700 mb-1">Live preview</span>
+                <div id="doc-preview" class="markdown-body border border-gray-200 rounded-md p-3 min-h-[20rem] bg-gray-50 text-sm"></div>
             </div>
         </div>
-    </main>
-</body>
-</html>
+        <div class="flex items-center gap-3">
+            <button type="submit"
+                    class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                Save {{ doc_type }}
+            </button>
+            <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}"
+               class="text-sm text-gray-600 hover:text-gray-800">
+                Cancel
+            </a>
+        </div>
+    </form>
+</div>
+{% else %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-medium text-gray-700 capitalize">{{ doc_type }} document</h2>
+        <div class="flex items-center gap-3">
+            {% if doc_meta %}
+            <span class="text-xs text-gray-400">Updated {{ doc_meta.updated_at }}</span>
+            {% endif %}
+            <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
+               class="text-sm text-blue-600 hover:underline">Edit</a>
+        </div>
+    </div>
+    {% if content %}
+    {% with content=content %}
+        {% include "includes/markdown_block.html" %}
+    {% endwith %}
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No {{ doc_type }} document yet.</p>
+    <a href="/{{ entity_type }}s/{{ entity_id }}/doc?type={{ doc_type }}&mode=edit"
+       class="mt-3 inline-block text-sm text-blue-600 hover:underline">Write {{ doc_type }} &rarr;</a>
+    {% endif %}
+</div>
+{% endif %}
+
+<div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Comments</h2>
+    {% with entity_type=entity_type, entity_id=entity_id, htmx=true %}
+        {% include "includes/comment_form.html" %}
+    {% endwith %}
+    <div class="space-y-3" id="comments-list-{{ entity_type }}-{{ entity_id }}">
+        {% for c in comments %}
+            {% include "includes/comment_item.html" %}
+        {% else %}
+        <p class="text-sm text-gray-400 italic">No comments yet.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

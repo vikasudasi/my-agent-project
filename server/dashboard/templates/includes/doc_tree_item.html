@@ -1,27 +1,36 @@
-<div class="{% if level > 0 %}ml-6 border-l-2 border-gray-200 pl-4{% endif %} mb-6">
-    <div class="flex flex-wrap items-center gap-2 mb-2">
-        <a href="/tasks/{{ task.id }}" class="font-medium text-gray-900 hover:text-blue-600">{{ task.title }}</a>
-        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize"
-              style="background-color: {{ status_color(task.status) }}20; color: {{ status_color(task.status) }}">
-            {{ task.status }}
-        </span>
-        <a href="/tasks/{{ task.id }}/doc?type={{ doc_type }}"
-           class="text-xs text-blue-600 hover:underline">Edit</a>
+<div class="{% if level > 0 %}ml-4 sm:ml-6 border-l-2 border-gray-200 pl-4{% endif %} mb-4">
+    <div class="border border-gray-200 rounded-lg overflow-hidden">
+        <button type="button"
+                class="doc-accordion-toggle w-full flex items-center justify-between gap-2 px-4 py-3 bg-gray-50 hover:bg-gray-100 text-left"
+                aria-expanded="false"
+                aria-controls="doc-panel-{{ task.id }}">
+            <div class="flex flex-wrap items-center gap-2 min-w-0">
+                <span class="font-medium text-gray-900 truncate">{{ task.title }}</span>
+                <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize"
+                      style="background-color: {{ status_color(task.status) }}20; color: {{ status_color(task.status) }}">
+                    {{ task.status }}
+                </span>
+            </div>
+            <span class="text-xs text-gray-400 shrink-0">{% if task.doc %}Has doc{% else %}Empty{% endif %}</span>
+        </button>
+        <div id="doc-panel-{{ task.id }}" class="hidden p-4 border-t border-gray-200">
+            <div class="flex items-center justify-end mb-2">
+                <a href="/tasks/{{ task.id }}/doc?type={{ doc_type }}"
+                   class="text-xs text-blue-600 hover:underline">Edit</a>
+            </div>
+            {% if task.doc %}
+            <p class="text-xs text-gray-400 mb-2">Updated {{ task.doc.updated_at }}</p>
+            {% with content=task.doc.content %}
+                {% include "includes/markdown_block.html" %}
+            {% endwith %}
+            {% else %}
+            <p class="text-sm text-gray-400 italic">No {{ doc_type }} document.</p>
+            {% endif %}
+        </div>
     </div>
-
-    {% if task.doc %}
-    <div class="bg-gray-50 rounded-lg border border-gray-200 p-4">
-        <p class="text-xs text-gray-400 mb-2">Updated {{ task.doc.updated_at }}</p>
-        {% with content=task.doc.content %}
-            {% include "includes/markdown_block.html" %}
-        {% endwith %}
-    </div>
-    {% else %}
-    <p class="text-sm text-gray-400 italic">No {{ doc_type }} document.</p>
-    {% endif %}
 
     {% if task.children %}
-    <div class="mt-4 space-y-4">
+    <div class="mt-3 space-y-3">
         {% for child in task.children %}
             {% with task=child, level=level + 1 %}
                 {% include "includes/doc_tree_item.html" %}

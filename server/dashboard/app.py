@@ -13,23 +13,22 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, Request, Form, HTTPException, Response, Query
+from fastapi import FastAPI, Request, Form, HTTPException, Response, Query, Header
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 
 from db import (
     init_db,
-    list_projects,
+    list_projects_with_progress,
     get_project,
     get_project_progress,
     get_task,
     get_task_tree,
-    list_tasks,
     get_task_subtree,
     update_task,
     update_project,
-    delete_task,
     get_project_doc,
     upsert_project_doc,
     get_task_doc,
@@ -45,30 +44,34 @@ from db import (
     get_agent,
     reissue_api_key,
     log_audit,
-    get_audit_log,
-    get_audit_log_by_agent,
-    get_project_audit_log,
+    get_audit_log_by_agent_paginated,
+    get_project_audit_log_paginated,
     get_recent_activity,
     get_task_creator,
     archive_project,
-    onboard_agent,
-    validate_api_key,
 )
+from dashboard.markdown_util import render_markdown
 
 app = FastAPI(title="AI Task Manager Dashboard")
 
-template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+dashboard_dir = os.path.dirname(os.path.abspath(__file__))
+template_dir = os.path.join(dashboard_dir, "templates")
+static_dir = os.path.join(dashboard_dir, "static")
 templates = Jinja2Templates(directory=template_dir)
+templates.env.filters["markdown"] = render_markdown
+
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # ---------------------------------------------------------------------------
 # Simple session auth (in-memory)
 # ---------------------------------------------------------------------------
 
-# Default admin credentials
 _ADMIN_USERNAME = "admin"
 _ADMIN_PASSWORD_HASH = hashlib.sha256(b"admin").hexdigest()
-_SESSION_SECRET = secrets.token_hex(16)  # Random per server restart
-_sessions: dict[str, str] = {}  # token -> username
+_SESSION_SECRET = secrets.token_hex(16)
+_sessions: dict[str, str] = {}
+
+_AUDIT_PAGE_SIZE = 50
 
 
 def _hash_password(password: str) -> str:
@@ -89,16 +92,11 @@ def _get_session_user(request: Request) -> Optional[str]:
 
 
 def _require_admin(request: Request):
-    """Returns the username if authenticated, raises 303 redirect otherwise."""
     user = _get_session_user(request)
     if not user:
         raise HTTPException(status_code=303, detail="Not authenticated")
     return user
 
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
 
 def _status_color(status: str) -> str:
     colors = {
@@ -128,16 +126,53 @@ def _format_audit_detail(entry: dict) -> str:
     return ""
 
 
+def _read_flash(request: Request) -> tuple[str, str]:
+    message = request.cookies.get("tm_flash", "")
+    flash_type = request.cookies.get("tm_flash_type", "success")
+    return message, flash_type
+
+
+def _flash_redirect(url: str, message: str, flash_type: str = "success") -> RedirectResponse:
+    redirect = RedirectResponse(url, status_code=303)
+    redirect.set_cookie("tm_flash", message, max_age=30, httponly=False, samesite="lax")
+    redirect.set_cookie("tm_flash_type", flash_type, max_age=30, httponly=False, samesite="lax")
+    return redirect
+
+
+def _template_context(request: Request, **kwargs) -> dict:
+    flash_message, flash_type = _read_flash(request)
+    ctx = {
+        "status_color": _status_color,
+        "format_audit_detail": _format_audit_detail,
+        "flash_message": flash_message,
+        "flash_type": flash_type,
+    }
+    ctx.update(kwargs)
+    return ctx
+
+
+def _clear_flash_response(response: Response) -> None:
+    response.delete_cookie("tm_flash")
+    response.delete_cookie("tm_flash_type")
+
+
+def _pagination_page(page: int) -> int:
+    return max(1, page)
+
+
+def _pagination_offset(page: int, limit: int) -> int:
+    return (page - 1) * limit
+
+
 # ---------------------------------------------------------------------------
-# Auth middleware — redirect to /login if not authenticated
+# Auth middleware
 # ---------------------------------------------------------------------------
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    # Allow login, static files, and doc pages without auth
     public_paths = {"/login", "/static/"}
     path = request.url.path
-    if any(path.startswith(p) for p in public_paths) or "/doc" in path:
+    if any(path.startswith(p) for p in public_paths):
         return await call_next(request)
 
     user = _get_session_user(request)
@@ -146,13 +181,20 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def flash_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.cookies.get("tm_flash"):
+        _clear_flash_response(response)
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout
 # ---------------------------------------------------------------------------
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
-    # If already logged in, redirect to home
     if _get_session_user(request):
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(
@@ -163,7 +205,7 @@ async def login_page(request: Request, error: str = ""):
 
 
 @app.post("/login")
-async def login(request: Request, response: Response,
+async def login(request: Request,
                 username: str = Form(...), password: str = Form(...)):
     if username == _ADMIN_USERNAME and _hash_password(password) == _ADMIN_PASSWORD_HASH:
         token = _create_session(username)
@@ -178,7 +220,7 @@ async def login(request: Request, response: Response,
 
 
 @app.get("/logout")
-async def logout(response: Response):
+async def logout():
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie("session")
     return response
@@ -196,24 +238,19 @@ async def home(
 ):
     status_filter = show if show in ("active", "archived", "all") else "active"
     status = None if status_filter == "all" else status_filter
-    projects = list_projects(status=status, q=q.strip() or None)
-    enriched = []
-    for p in projects:
-        progress = get_project_progress(p["id"])
-        enriched.append(progress if progress else p)
+    projects = list_projects_with_progress(status=status, q=q.strip() or None)
 
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "projects": enriched,
-            "agents": list_agents(),
-            "recent_activity": get_recent_activity(limit=25),
-            "status_color": _status_color,
-            "format_audit_detail": _format_audit_detail,
-            "search_q": q,
-            "show_filter": status_filter,
-        },
+        _template_context(
+            request,
+            projects=projects,
+            agents=list_agents(),
+            recent_activity=get_recent_activity(limit=25),
+            search_q=q,
+            show_filter=status_filter,
+        ),
     )
 
 
@@ -222,7 +259,7 @@ async def project_create(request: Request, name: str = Form(...), description: s
     result = create_project(name, description)
     agent, master = _dashboard_actor(request)
     log_audit(agent, master, "project", result["id"], "created")
-    return RedirectResponse("/", status_code=303)
+    return _flash_redirect("/", f"Project \"{name}\" created.")
 
 
 @app.post("/projects/{project_id}/archive")
@@ -232,7 +269,7 @@ async def project_archive(request: Request, project_id: str):
     if old:
         agent, master = _dashboard_actor(request)
         log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "archived")
-    return RedirectResponse("/", status_code=303)
+    return _flash_redirect("/", "Project archived.")
 
 
 @app.post("/projects/{project_id}/restore")
@@ -242,7 +279,7 @@ async def project_restore(request: Request, project_id: str):
     if old:
         agent, master = _dashboard_actor(request)
         log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "active")
-    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+    return _flash_redirect(f"/projects/{project_id}", "Project restored.")
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -260,16 +297,16 @@ async def project_detail(request: Request, project_id: str):
     return templates.TemplateResponse(
         request,
         "project.html",
-        {
-            "project": project,
-            "task_tree": task_tree,
-            "doc_spec": doc_spec,
-            "doc_progress": doc_progress,
-            "doc_closure": doc_closure,
-            "comments": comments,
-            "status_color": _status_color,
-            "statuses": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-        },
+        _template_context(
+            request,
+            project=project,
+            task_tree=task_tree,
+            doc_spec=doc_spec,
+            doc_progress=doc_progress,
+            doc_closure=doc_closure,
+            comments=comments,
+            statuses=["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
+        ),
     )
 
 
@@ -291,29 +328,39 @@ async def task_create_route(
         agent, master = _dashboard_actor(request)
         log_audit(agent, master, "task", result["id"], "created")
     if parent_id:
-        return RedirectResponse(f"/tasks/{parent_id}", status_code=303)
-    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+        return _flash_redirect(f"/tasks/{parent_id}", f"Subtask \"{title}\" created.")
+    return _flash_redirect(f"/projects/{project_id}", f"Task \"{title}\" created.")
 
 
 @app.post("/tasks/{task_id}/update")
-async def task_update_route(request: Request, task_id: str, status: str = Form(...)):
+async def task_update_route(
+    request: Request,
+    task_id: str,
+    status: str = Form(...),
+    hx_request: Optional[str] = Header(None, alias="HX-Request"),
+):
     old = get_task(task_id)
     result = update_task(task_id, status=status)
     if old and result and old["status"] != status:
         agent, master = _dashboard_actor(request)
         log_audit(agent, master, "task", task_id, "updated", "status", old["status"], status)
+
     task = result or get_task(task_id)
-    if task:
-        referer = request.headers.get("referer", "")
-        if f"/tasks/{task_id}" in referer:
-            return RedirectResponse(f"/tasks/{task_id}", status_code=303)
-        return RedirectResponse(f"/projects/{task['project_id']}", status_code=303)
-    return RedirectResponse("/", status_code=303)
+    if not task:
+        return _flash_redirect("/", "Task not found.", "error")
 
+    if hx_request:
+        response = HTMLResponse("")
+        response.headers["HX-Trigger"] = (
+            '{"showToast": {"message": "Status updated to ' + status.replace("_", " ") + '", "type": "success"}}'
+        )
+        return response
 
-# ---------------------------------------------------------------------------
-# Task Detail Page
-# ---------------------------------------------------------------------------
+    referer = request.headers.get("referer", "")
+    if f"/tasks/{task_id}" in referer:
+        return _flash_redirect(f"/tasks/{task_id}", f"Status updated to {status.replace('_', ' ')}.")
+    return _flash_redirect(f"/projects/{task['project_id']}", f"Status updated to {status.replace('_', ' ')}.")
+
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_detail(request: Request, task_id: str):
@@ -330,7 +377,6 @@ async def task_detail(request: Request, task_id: str):
     doc_closure = get_task_doc(task_id, doc_type="closure")
     comments = list_comments("task", task_id)
 
-    # Build breadcrumb: walk up parent chain
     breadcrumb = []
     current = task
     while current and current.get("parent_id"):
@@ -344,26 +390,22 @@ async def task_detail(request: Request, task_id: str):
     return templates.TemplateResponse(
         request,
         "task_detail.html",
-        {
-            "task": task,
-            "project": project,
-            "full_tree": full_tree,
-            "subtasks": subtasks,
-            "doc_spec": doc_spec,
-            "doc_progress": doc_progress,
-            "doc_closure": doc_closure,
-            "comments": comments,
-            "breadcrumb": breadcrumb,
-            "created_by": get_task_creator(task_id),
-            "status_color": _status_color,
-            "statuses": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-        },
+        _template_context(
+            request,
+            task=task,
+            project=project,
+            full_tree=full_tree,
+            subtasks=subtasks,
+            doc_spec=doc_spec,
+            doc_progress=doc_progress,
+            doc_closure=doc_closure,
+            comments=comments,
+            breadcrumb=breadcrumb,
+            created_by=get_task_creator(task_id),
+            statuses=["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
+        ),
     )
 
-
-# ---------------------------------------------------------------------------
-# Comments
-# ---------------------------------------------------------------------------
 
 @app.post("/comments/{entity_type}/{entity_id}")
 async def comment_add_route(
@@ -372,64 +414,82 @@ async def comment_add_route(
     entity_id: str,
     content: str = Form(...),
     author: str = Form(""),
+    hx_request: Optional[str] = Header(None, alias="HX-Request"),
 ):
-    add_comment(entity_type, entity_id, content, author=author)
+    comment = add_comment(entity_type, entity_id, content, author=author)
     agent, master = _dashboard_actor(request)
     log_audit(agent, master, entity_type, entity_id, "comment_added")
+
+    if hx_request and comment:
+        return templates.TemplateResponse(
+            request,
+            "includes/comment_item.html",
+            {"c": comment},
+        )
+
     if entity_type == "project":
-        return RedirectResponse(f"/projects/{entity_id}", status_code=303)
-    return RedirectResponse(f"/tasks/{entity_id}", status_code=303)
+        return _flash_redirect(f"/projects/{entity_id}", "Comment added.")
+    return _flash_redirect(f"/tasks/{entity_id}", "Comment added.")
 
-
-# ---------------------------------------------------------------------------
-# Doc pages (updated with doc_type support)
-# ---------------------------------------------------------------------------
 
 @app.get("/tasks/{task_id}/doc", response_class=HTMLResponse)
-async def task_doc_page(request: Request, task_id: str,
-                         type: str = Query("spec"),
-                         mode: str = Query("view")):
+async def task_doc_page(
+    request: Request,
+    task_id: str,
+    type: str = Query("spec"),
+    mode: str = Query("view"),
+):
     doc_type = type
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
     doc_meta = get_task_doc_meta(task_id, doc_type=doc_type)
     doc = doc_meta["content"] if doc_meta else ""
-    project = get_project(task["project_id"])
     comments = list_comments("task", task_id)
     return templates.TemplateResponse(
         request,
         "doc.html",
-        {
-            "entity_type": "task",
-            "entity_id": task_id,
-            "title": task["title"],
-            "project_id": task["project_id"],
-            "content": doc,
-            "doc_meta": doc_meta,
-            "doc_type": doc_type,
-            "mode": mode if mode == "edit" else "view",
-            "comments": comments,
-        },
+        _template_context(
+            request,
+            entity_type="task",
+            entity_id=task_id,
+            title=task["title"],
+            project_id=task["project_id"],
+            content=doc,
+            doc_meta=doc_meta,
+            doc_type=doc_type,
+            mode=mode if mode == "edit" else "view",
+            comments=comments,
+        ),
     )
 
 
 @app.post("/tasks/{task_id}/doc")
-async def task_doc_update(request: Request, task_id: str, content: str = Form(...),
-                           doc_type: str = Form("spec")):
+async def task_doc_update(
+    request: Request,
+    task_id: str,
+    content: str = Form(...),
+    doc_type: str = Form("spec"),
+):
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
     upsert_task_doc(task_id, content, doc_type=doc_type)
     agent, master = _dashboard_actor(request)
     log_audit(agent, master, "task", task_id, "updated", f"doc_{doc_type}")
-    return RedirectResponse(f"/tasks/{task_id}/doc?type={doc_type}", status_code=303)
+    return _flash_redirect(
+        f"/tasks/{task_id}/doc?type={doc_type}",
+        f"{doc_type.capitalize()} document saved.",
+    )
 
 
 @app.get("/projects/{project_id}/doc", response_class=HTMLResponse)
-async def project_doc_page(request: Request, project_id: str,
-                            type: str = Query("spec"),
-                            mode: str = Query("view")):
+async def project_doc_page(
+    request: Request,
+    project_id: str,
+    type: str = Query("spec"),
+    mode: str = Query("view"),
+):
     doc_type = type
     project = get_project(project_id)
     if not project:
@@ -440,35 +500,46 @@ async def project_doc_page(request: Request, project_id: str,
     return templates.TemplateResponse(
         request,
         "doc.html",
-        {
-            "entity_type": "project",
-            "entity_id": project_id,
-            "title": project["name"],
-            "project_id": project_id,
-            "content": doc,
-            "doc_meta": doc_meta,
-            "doc_type": doc_type,
-            "mode": mode if mode == "edit" else "view",
-            "comments": comments,
-        },
+        _template_context(
+            request,
+            entity_type="project",
+            entity_id=project_id,
+            title=project["name"],
+            project_id=project_id,
+            content=doc,
+            doc_meta=doc_meta,
+            doc_type=doc_type,
+            mode=mode if mode == "edit" else "view",
+            comments=comments,
+        ),
     )
 
 
 @app.post("/projects/{project_id}/doc")
-async def project_doc_update(request: Request, project_id: str, content: str = Form(...),
-                              doc_type: str = Form("spec")):
+async def project_doc_update(
+    request: Request,
+    project_id: str,
+    content: str = Form(...),
+    doc_type: str = Form("spec"),
+):
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     upsert_project_doc(project_id, content, doc_type=doc_type)
     agent, master = _dashboard_actor(request)
     log_audit(agent, master, "project", project_id, "updated", f"doc_{doc_type}")
-    return RedirectResponse(f"/projects/{project_id}/doc?type={doc_type}", status_code=303)
+    return _flash_redirect(
+        f"/projects/{project_id}/doc?type={doc_type}",
+        f"{doc_type.capitalize()} document saved.",
+    )
 
 
 @app.get("/projects/{project_id}/docs", response_class=HTMLResponse)
-async def project_docs_hub(request: Request, project_id: str,
-                            type: str = Query("spec")):
+async def project_docs_hub(
+    request: Request,
+    project_id: str,
+    type: str = Query("spec"),
+):
     doc_type = type if type in ("spec", "progress", "closure") else "spec"
     project = get_project(project_id)
     if not project:
@@ -477,59 +548,80 @@ async def project_docs_hub(request: Request, project_id: str,
     return templates.TemplateResponse(
         request,
         "project_docs_hub.html",
-        {
-            "project": project,
-            "hub": hub,
-            "doc_type": doc_type,
-            "status_color": _status_color,
-        },
+        _template_context(
+            request,
+            project=project,
+            hub=hub,
+            doc_type=doc_type,
+        ),
     )
 
 
 @app.get("/projects/{project_id}/audit", response_class=HTMLResponse)
-async def project_audit_page(request: Request, project_id: str):
+async def project_audit_page(
+    request: Request,
+    project_id: str,
+    page: int = Query(1),
+):
     project = get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    audit = get_project_audit_log(project_id)
+    page = _pagination_page(page)
+    audit_data = get_project_audit_log_paginated(
+        project_id,
+        limit=_AUDIT_PAGE_SIZE,
+        offset=_pagination_offset(page, _AUDIT_PAGE_SIZE),
+    )
     return templates.TemplateResponse(
         request,
         "project_audit.html",
-        {
-            "project": project,
-            "audit": audit,
-            "status_color": _status_color,
-            "format_audit_detail": _format_audit_detail,
-        },
+        _template_context(
+            request,
+            project=project,
+            audit=audit_data["entries"],
+            pagination=audit_data,
+        ),
     )
 
-
-# ---------------------------------------------------------------------------
-# Admin: Agent Management
-# ---------------------------------------------------------------------------
 
 @app.get("/admin/agents", response_class=HTMLResponse)
 async def admin_agents(request: Request):
     _require_admin(request)
-    agents = list_agents()
     return templates.TemplateResponse(
         request,
         "admin_agents.html",
-        {"agents": agents},
+        _template_context(request, agents=list_agents()),
     )
 
 
 @app.get("/admin/agents/{agent_id}", response_class=HTMLResponse)
-async def admin_agent_detail(request: Request, agent_id: str):
+async def admin_agent_detail(
+    request: Request,
+    agent_id: str,
+    page: int = Query(1),
+):
     _require_admin(request)
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(404, "Agent not found")
-    audit = get_audit_log_by_agent(agent["name"])
+    page = _pagination_page(page)
+    audit_data = get_audit_log_by_agent_paginated(
+        agent["name"],
+        limit=_AUDIT_PAGE_SIZE,
+        offset=_pagination_offset(page, _AUDIT_PAGE_SIZE),
+    )
     return templates.TemplateResponse(
         request,
         "admin_agent_detail.html",
-        {"agent": agent, "audit": audit, "new_key": None, "back_url": "/", "back_label": "Dashboard"},
+        _template_context(
+            request,
+            agent=agent,
+            audit=audit_data["entries"],
+            pagination=audit_data,
+            new_key=None,
+            back_url="/",
+            back_label="Dashboard",
+        ),
     )
 
 
@@ -540,16 +632,19 @@ async def admin_agent_reissue(request: Request, agent_id: str):
     if not result:
         raise HTTPException(404, "Agent not found")
     log_audit("admin", "admin", "agent", agent_id, "key_reissued")
+    audit_data = get_audit_log_by_agent_paginated(result["name"], limit=_AUDIT_PAGE_SIZE, offset=0)
     return templates.TemplateResponse(
         request,
         "admin_agent_detail.html",
-        {
-            "agent": result,
-            "new_key": result["api_key"],
-            "audit": get_audit_log_by_agent(result["name"]),
-            "back_url": "/",
-            "back_label": "Dashboard",
-        },
+        _template_context(
+            request,
+            agent=result,
+            new_key=result["api_key"],
+            audit=audit_data["entries"],
+            pagination=audit_data,
+            back_url="/",
+            back_label="Dashboard",
+        ),
     )
 
 
@@ -559,46 +654,44 @@ async def admin_settings(request: Request, message: str = "", error: str = ""):
     return templates.TemplateResponse(
         request,
         "admin_settings.html",
-        {"message": message, "error": error},
+        _template_context(request, message=message, error=error),
     )
 
 
 @app.post("/admin/settings/password")
-async def admin_change_password(request: Request,
-                                 current_password: str = Form(...),
-                                 new_password: str = Form(...),
-                                 confirm_password: str = Form(...)):
+async def admin_change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+):
     _require_admin(request)
     global _ADMIN_PASSWORD_HASH
     if _hash_password(current_password) != _ADMIN_PASSWORD_HASH:
         return templates.TemplateResponse(
             request,
             "admin_settings.html",
-            {"error": "Current password is incorrect"},
+            _template_context(request, error="Current password is incorrect"),
         )
     if new_password != confirm_password:
         return templates.TemplateResponse(
             request,
             "admin_settings.html",
-            {"error": "New passwords do not match"},
+            _template_context(request, error="New passwords do not match"),
         )
     if len(new_password) < 4:
         return templates.TemplateResponse(
             request,
             "admin_settings.html",
-            {"error": "New password must be at least 4 characters"},
+            _template_context(request, error="New password must be at least 4 characters"),
         )
     _ADMIN_PASSWORD_HASH = _hash_password(new_password)
     return templates.TemplateResponse(
         request,
         "admin_settings.html",
-        {"message": "Password changed successfully"},
+        _template_context(request, message="Password changed successfully"),
     )
 
-
-# ---------------------------------------------------------------------------
-# Start
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     init_db()

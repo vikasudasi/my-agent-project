@@ -1,0 +1,15 @@
+<form action="/comments/{{ entity_type }}/{{ entity_id }}" method="POST"
+      class="mb-6"
+      {% if htmx %}hx-post="/comments/{{ entity_type }}/{{ entity_id }}" hx-target="#comments-list-{{ entity_type }}-{{ entity_id }}" hx-swap="beforeend" hx-on::after-request="if(event.detail.successful) this.reset()"{% endif %}>
+    <div class="flex flex-col sm:flex-row gap-2">
+        <label for="comment-author-{{ entity_type }}-{{ entity_id }}" class="sr-only">Your name</label>
+        <input type="text" name="author" id="comment-author-{{ entity_type }}-{{ entity_id }}"
+               placeholder="Your name"
+               class="w-full sm:w-32 px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+        <label for="comment-content-{{ entity_type }}-{{ entity_id }}" class="sr-only">Comment</label>
+        <textarea name="content" id="comment-content-{{ entity_type }}-{{ entity_id }}"
+                  placeholder="Add a comment..." required rows="2"
+                  class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 resize-y min-h-[2.5rem]"></textarea>
+        <button type="submit" class="px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 self-end">Comment</button>
+    </div>
+</form>

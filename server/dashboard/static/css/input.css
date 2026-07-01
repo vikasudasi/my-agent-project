@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.markdown-body h1 { @apply text-2xl font-bold my-4; }
+.markdown-body h2 { @apply text-xl font-semibold my-3; }
+.markdown-body h3 { @apply text-lg font-semibold my-2; }
+.markdown-body p { @apply my-2 leading-relaxed; }
+.markdown-body ul, .markdown-body ol { @apply my-2 pl-6; }
+.markdown-body ul { @apply list-disc; }
+.markdown-body ol { @apply list-decimal; }
+.markdown-body li { @apply my-1; }
+.markdown-body code { @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm; }
+.markdown-body pre { @apply bg-gray-100 p-3 rounded-lg overflow-x-auto my-3; }
+.markdown-body pre code { @apply bg-transparent p-0; }
+.markdown-body blockquote { @apply border-l-4 border-gray-300 pl-4 text-gray-500 my-3; }
+.markdown-body a { @apply text-blue-600 underline; }
+.markdown-body table { @apply w-full border-collapse my-3 text-sm; }
+.markdown-body th, .markdown-body td { @apply border border-gray-200 px-3 py-2 text-left; }
+.markdown-body th { @apply bg-gray-50 font-semibold; }
+.markdown-body hr { @apply border-0 border-t border-gray-200 my-4; }
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-safe-transition { transition: none !important; }
+}

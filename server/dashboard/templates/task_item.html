@@ -4,40 +4,40 @@
      data-title="{{ task.title | lower }}"
      data-description="{{ task.description | lower }}"
      style="margin-left: {{ level * 1.5 if level is defined else 0 }}rem">
-    <div class="flex items-center justify-between">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div class="flex items-center gap-3 flex-1 min-w-0">
             {% if task.children %}
             <button type="button"
                     onclick="toggleSubtasks('{{ task.id }}')"
                     id="toggle-{{ task.id }}"
-                    class="flex-shrink-0 w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-600"
+                    class="flex-shrink-0 w-5 h-5 flex items-center justify-center text-gray-400 hover:text-gray-600 motion-safe-transition"
                     aria-expanded="false"
-                    title="Toggle subtasks">
-                <svg class="w-4 h-4 transition-transform" id="chevron-{{ task.id }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    aria-label="Toggle subtasks for {{ task.title }}">
+                <svg class="w-4 h-4 transition-transform motion-safe-transition" id="chevron-{{ task.id }}" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                 </svg>
             </button>
             {% else %}
-            <span class="w-5 flex-shrink-0"></span>
+            <span class="w-5 flex-shrink-0" aria-hidden="true"></span>
             {% endif %}
 
-            <!-- Status indicator -->
-            <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
+            <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0"
+                  hx-post="/tasks/{{ task.id }}/update" hx-swap="none">
                 <input type="hidden" name="status"
                        value="{% if task.status == 'completed' %}pending{% else %}completed{% endif %}">
                 <button type="submit"
                         class="w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors"
                         style="border-color: {{ status_color(task.status) }};
-                               {% if task.status == 'completed' %}background-color: {{ status_color(task.status) }};{% endif %}">
+                               {% if task.status == 'completed' %}background-color: {{ status_color(task.status) }};{% endif %}"
+                        aria-label="{% if task.status == 'completed' %}Mark {{ task.title }} as pending{% else %}Mark {{ task.title }} as completed{% endif %}">
                     {% if task.status == 'completed' %}
-                        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                         </svg>
                     {% endif %}
                 </button>
             </form>
 
-            <!-- Title -->
             <div class="flex-1 min-w-0">
                 <a href="/tasks/{{ task.id }}" class="hover:underline">
                     <span class="text-sm font-medium text-gray-900 {% if task.status == 'completed' %}line-through text-gray-400{% endif %}">
@@ -53,16 +53,15 @@
             </div>
         </div>
 
-        <div class="flex items-center gap-2 flex-shrink-0">
-            <!-- Status badge -->
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize"
+        <div class="flex items-center gap-2 flex-shrink-0 flex-wrap sm:justify-end">
+            <span class="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize"
                   style="background-color: {{ status_color(task.status) }}20; color: {{ status_color(task.status) }}">
                 {{ task.status }}
             </span>
 
-            <!-- Status change dropdown -->
             <form action="/tasks/{{ task.id }}/update" method="POST" class="flex-shrink-0">
-                <select name="status" onchange="this.form.submit()"
+                <label for="status-{{ task.id }}" class="sr-only">Status for {{ task.title }}</label>
+                <select name="status" id="status-{{ task.id }}" data-confirm
                         class="text-xs border border-gray-300 rounded px-1.5 py-1 bg-white focus:ring-1 focus:ring-blue-500">
                     {% for s in ['pending', 'in_progress', 'completed', 'blocked', 'failed', 'cancelled'] %}
                         <option value="{{ s }}" {% if task.status == s %}selected{% endif %}>{{ s }}</option>
@@ -71,17 +70,17 @@
             </form>
 
             <a href="/tasks/{{ task.id }}/doc"
-               class="text-xs text-gray-400 hover:text-gray-600 px-1" title="Documentation">&#128196;</a>
+               class="text-xs text-gray-400 hover:text-gray-600 px-1"
+               aria-label="Documentation for {{ task.title }}">Doc</a>
 
-            <button onclick="document.getElementById('subtask-{{ task.id }}').classList.toggle('hidden')"
+            <button type="button" onclick="document.getElementById('subtask-{{ task.id }}').classList.toggle('hidden')"
                     class="text-xs text-blue-600 hover:text-blue-800">+sub</button>
         </div>
     </div>
 
-    <!-- Subtask creation form -->
     <form id="subtask-{{ task.id }}"
           action="/projects/{{ task.project_id }}/tasks/create" method="POST"
-          class="hidden mt-2 flex gap-2 ml-10">
+          class="hidden mt-2 flex flex-col sm:flex-row gap-2 ml-0 sm:ml-10">
         <input type="hidden" name="parent_id" value="{{ task.id }}">
         <input type="text" name="title" placeholder="Subtask title" required
                class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded">
@@ -89,7 +88,6 @@
                 class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
     </form>
 
-    <!-- Children (collapsed by default) -->
     {% if task.children %}
         <div id="subtasks-{{ task.id }}" class="hidden mt-2 space-y-2 task-children">
             {% for child in task.children %}
