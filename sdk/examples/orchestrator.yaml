@@ -1,0 +1,35 @@
+tm:
+  backend: cli
+  # server_dir: ../server   # optional; defaults to repo server/
+  api_key_env: TM_API_KEY
+
+agent:
+  command: cursor
+  args:
+    - agent
+    - --print
+    - --force
+    - --output-format
+    - text
+  cwd: .
+  timeout_seconds: 1800
+  prompt_via: arg
+
+repeat_instructions: |
+  You are executing ONE subtask from the task manager.
+  - Fetch task details yourself: task_get, spec doc, comments, parent context.
+  - Only complete this subtask; do not start sibling tasks.
+  - Follow task-management skill: update status, write progress/closure docs.
+  - When done, summarize what changed in 3-5 bullets.
+
+policies:
+  traversal: depth_first
+  on_failure: stop
+  status_mode: agent
+  auto_complete_parent: true
+  verify_completion: true
+  skip_statuses:
+    - completed
+    - cancelled
+
+runs_dir: .tm-runs

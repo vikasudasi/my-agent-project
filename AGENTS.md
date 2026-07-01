@@ -16,4 +16,5 @@ Non-obvious notes for future agents:
 - **Port conflict:** both the dashboard and the MCP HTTP server default to port `8000`. To run them simultaneously, put one on a different port, e.g. `python3 mcp_server.py --http --port 8001`.
 - **CLI mutations require auth:** onboard an agent first (`python3 cli.py agent onboard --name <n> --master <m>`) and pass the returned key via the `TM_API_KEY` env var. `agent onboard` and `db init` need no auth.
 - **DB path override:** set `TM_DB_PATH` to point the CLI/server at a different SQLite file.
+- **Task orchestrator SDK:** `sdk/` package runs headless agents one subtask at a time (`task-orchestrator run --task <id> --config examples/orchestrator.yaml`). See `sdk/README.md`.
 - Dependencies install to the user site (`~/.local`); invoke tools via `python3 -m ...` / `python3 <script>.py` so PATH doesn't matter.

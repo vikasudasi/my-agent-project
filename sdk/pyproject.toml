@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "task-orchestrator"
+version = "0.1.0"
+description = "Orchestrate sequential subtask execution via headless CLI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+task-orchestrator = "task_orchestrator.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["task_orchestrator*"]
