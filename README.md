@@ -2,7 +2,7 @@
 
 A lightweight task-management platform built for **AI agents and humans**. Track projects, ordered tasks and subtasks, markdown documentation, comments, and a full audit trail — all backed by a single SQLite database.
 
-Use it three ways: **CLI** (zero dependencies), **MCP** (IDE agents), or **Web Dashboard** (visual oversight). Every interface reads and writes the same data, so agents and people can collaborate in real time.
+**For AI agents:** connect via **MCP** (recommended) — workflow tools, strict lifecycle validation, read hints, and pinnable reference resources. **For humans:** use the **Web Dashboard** or **CLI** (scripting/debugging). Every interface reads and writes the same data.
 
 ---
 
@@ -11,15 +11,17 @@ Use it three ways: **CLI** (zero dependencies), **MCP** (IDE agents), or **Web D
 - [Overview](#overview)
 - [Features](#features)
 - [Architecture](#architecture)
-- [Quick Start — CLI](#quick-start--cli)
-- [Quick Start — MCP](#quick-start--mcp)
+- [Quick Start — MCP (agents)](#quick-start--mcp-agents)
 - [Quick Start — Web Dashboard](#quick-start--web-dashboard)
+- [Quick Start — CLI (fallback)](#quick-start--cli-fallback)
 - [Docker Deployment](#docker-deployment)
 - [Documentation Model](#documentation-model)
+- [Strict Lifecycle Rules](#strict-lifecycle-rules)
 - [Project Structure](#project-structure)
+- [MCP Tools & Resources](#mcp-tools--resources)
 - [CLI Reference](#cli-reference)
-- [MCP Tools](#mcp-tools)
 - [Agent Skill](#agent-skill)
+- [Task Orchestrator SDK](#task-orchestrator-sdk)
 - [Development](#development)
 - [License](#license)
 
@@ -29,11 +31,11 @@ Use it three ways: **CLI** (zero dependencies), **MCP** (IDE agents), or **Web D
 
 | Interface | Best for | Server required |
 |-----------|----------|-----------------|
-| **CLI** | Scripts, terminals, quick automation | No |
-| **MCP** | Cursor, Claude Desktop, remote agents | Yes |
-| **Dashboard** | Humans reviewing progress and docs | Yes |
+| **MCP** | Cursor, Claude Desktop, remote agents (**preferred for agents**) | Yes |
+| **Dashboard** | Humans reviewing progress, docs, and audit | Yes |
+| **CLI** | Local scripting, debugging, automation without MCP | No |
 
-All interfaces share one database (`task_manager.db`). Create a project in the CLI, let an agent update tasks over MCP, and review the result in the browser — no sync step needed.
+All interfaces share one database (`server/task_manager.db`). An agent can plan over MCP while a human reviews the same project in the browser — no sync step.
 
 ---
 
@@ -41,17 +43,27 @@ All interfaces share one database (`task_manager.db`). Create a project in the C
 
 ### Core
 
-- **Projects** — Create, update, archive, and track completion progress
+- **Projects** — Create, update, archive, restore, and track completion progress
 - **Ordered tasks** — Root tasks and nested subtasks with fractional-index ordering
 - **Six task statuses** — `pending`, `in_progress`, `completed`, `blocked`, `failed`, `cancelled`
 - **Markdown docs** — Three doc types per project and task: `spec`, `progress`, `closure`
 - **Comments** — Timestamped, append-only notes on projects and tasks
 
+### MCP agent experience
+
+- **29 MCP tools** — CRUD plus composite workflow tools and enriched read paths
+- **Workflow tools** — `session_context`, `task_begin_work`, `task_record_progress`, `task_complete`
+- **Strict validation** — Required `initial_spec`, spec-before-work, parent completion blocks, mandatory blocker/failure/closure fields
+- **Guided responses** — `warnings`, `next_steps` on reads and mutations; `remediation` on validation errors
+- **Static resources** — Pinnable playbook and doc templates (`taskmgr://…` URIs)
+- **Multi-agent** — `is_yours` on shared projects via optional `api_key` on read tools
+- **Server instructions** — Playbook injected at MCP connect time
+
 ### Agent & governance
 
-- **Agent onboarding** — Register agents with scoped API keys
-- **Audit log** — Every mutation recorded with agent identity and field-level diffs
-- **Portable skill** — Drop-in skill folder for Cursor and other agent runtimes
+- **Agent onboarding** — Register agents with API keys (audit identity on every mutation)
+- **Audit log** — Field-level mutation history with agent name and master
+- **Portable skill** — Drop-in `skill/task-management/` for Cursor and other runtimes (MCP-first)
 
 ### Web Dashboard
 
@@ -62,12 +74,6 @@ All interfaces share one database (`task_manager.db`). Create a project in the C
 - **Audit pages** — Per-project and per-agent activity history
 - **Archive** — Soft-delete projects (restore anytime)
 
-### Interfaces
-
-- **CLI** — Pure Python, argparse, JSON output (add `--pretty` for humans)
-- **MCP** — 22 tools over stdio or HTTP/SSE
-- **Dashboard** — FastAPI + Jinja2 + Tailwind
-
 ---
 
 ## Architecture
@@ -75,25 +81,25 @@ All interfaces share one database (`task_manager.db`). Create a project in the C
 ```mermaid
 flowchart TB
     subgraph clients [Clients]
-        CLI["CLI\npython cli.py"]
-        MCP["MCP Server\nmcp_server.py"]
+        MCP["MCP Server\nmcp_server.py\n29 tools + 4 resources"]
         WEB["Web Dashboard\nFastAPI :8000"]
+        CLI["CLI\ncli.py\nfallback"]
     end
 
     subgraph data [Data Layer]
         DB[("SQLite\ntask_manager.db")]
     end
 
-    CLI --> DB
     MCP --> DB
     WEB --> DB
+    CLI --> DB
 ```
 
 **Doc types** flow through every interface:
 
 ```
 Project
-├── spec      → plan and acceptance criteria
+├── spec      → plan and acceptance criteria (required at MCP create)
 ├── progress  → work log (never overwrites spec)
 └── closure   → summary when done
 
@@ -102,55 +108,58 @@ Task (each)
 └── subtasks (ordered, nested)
 ```
 
----
+**Typical agent session:**
 
-## Quick Start — CLI
-
-Requires **Python 3.10+**. No pip install needed.
-
-```bash
-cd server
-
-# Initialize the database (first run only)
-python cli.py db init
-
-# Onboard an agent (required before mutations)
-python cli.py agent onboard --name my-agent --master "Your Name"
-
-# Create a project and tasks
-python cli.py project create "Build Auth System" --desc "JWT-based authentication"
-python cli.py task create <PROJECT_ID> "Research options"
-python cli.py task create <PROJECT_ID> "Implement JWT" --after <TASK_ID>
-
-# Attach a spec doc to a task
-python cli.py doc task set <TASK_ID> "# Spec\n## Objective\n..." --type spec
-
-# Check progress
-python cli.py project get <PROJECT_ID> --pretty
+```
+session_context → task_begin_work → task_record_progress → task_complete
 ```
 
-Every command emits **JSON** to stdout. Pass `--pretty` for formatted output.
-
 ---
 
-## Quick Start — MCP
+## Quick Start — MCP (agents)
 
 ### 1. Install dependencies
 
 ```bash
 cd server
 pip install -r requirements.txt
+python cli.py db init   # first run only — creates task_manager.db
 ```
 
-### 2. Start the server
+### 2. Onboard and persist your API key
 
-**Stdio** (local subprocess — Cursor, Claude Desktop):
+```bash
+# One-time — or use MCP tool agent_onboard from the IDE
+python cli.py agent onboard --name my-agent --master "Your Name"
+```
+
+Save the returned `api_key` **outside the repo**, e.g. `~/.config/task-manager/credentials.json`. Wire it into your MCP client env so context resets do not lose auth:
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "python3",
+      "args": ["/absolute/path/to/server/mcp_server.py"],
+      "env": {
+        "TM_API_KEY": "tm_<your-key>"
+      }
+    }
+  }
+}
+```
+
+See [skill/task-management/SKILL.md](skill/task-management/SKILL.md) for full key guardrails.
+
+### 3. Start the server
+
+**Stdio** (Cursor, Claude Desktop — subprocess):
 
 ```bash
 python mcp_server.py
 ```
 
-**HTTP/SSE** (remote agents, web clients):
+**HTTP/SSE** (remote agents):
 
 ```bash
 python mcp_server.py --http --port 8000
@@ -160,33 +169,27 @@ python mcp_server.py --http --port 8000
 |----------|---------|
 | `GET /sse` | Server-sent events stream |
 | `POST /messages?session_id=…` | JSON-RPC messages |
+| `POST /mcp` | Streamable HTTP (stateless) |
 
-### 3. Configure your client
+### 4. Pin MCP resources (recommended)
 
-**Cursor** — `.cursor/mcp.json`:
+Attach these read-only resources in your MCP host for stable session context:
 
-```json
-{
-  "mcpServers": {
-    "task-manager": {
-      "command": "python",
-      "args": ["/absolute/path/to/server/mcp_server.py"]
-    }
-  }
-}
+| URI | Content |
+|-----|---------|
+| `taskmgr://reference/playbook` | Agent playbook and lifecycle rules |
+| `taskmgr://templates/spec` | `initial_spec` skeleton |
+| `taskmgr://templates/progress` | Progress doc skeleton |
+| `taskmgr://templates/closure` | Closure doc skeleton |
+
+### 5. Session workflow
+
 ```
-
-**SSE client**:
-
-```json
-{
-  "mcpServers": {
-    "task-manager": {
-      "type": "sse",
-      "url": "http://localhost:8000/sse"
-    }
-  }
-}
+1. session_context                          → list projects
+2. session_context project_id=<id>          → available_tasks, snapshot
+3. task_begin_work task_id=<id>             → spec + comments, set in_progress
+4. task_record_progress                     → session findings
+5. task_complete task_id=<id> closure_note=… → closure + completed
 ```
 
 Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
@@ -195,7 +198,7 @@ Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 npx @modelcontextprotocol/inspector http://localhost:8000/sse
 ```
 
-> **Tip:** The MCP server and dashboard both default to port `8000`. Run one on a different port if you need both simultaneously, e.g. `uvicorn app:app --port 8080`.
+> **Port conflict:** MCP HTTP and the dashboard both default to port `8000`. Run one on another port, e.g. `python mcp_server.py --http --port 8001` or `uvicorn dashboard.app:app --port 8080`.
 
 ---
 
@@ -225,7 +228,28 @@ Change the password under **Settings** after first login.
 | All docs | `/projects/{id}/docs` | Read-only hub for spec / progress / closure |
 | Doc editor | `/projects/{id}/doc` | View or edit a single doc |
 | Audit log | `/projects/{id}/audit` | Project and task mutation history |
-| Agents | `/admin/agents` | Onboarded agents and activity |
+| Agents | `/admin/agents` | Onboarded agents; reissue keys |
+
+---
+
+## Quick Start — CLI (fallback)
+
+Pure Python stdlib — no server process. Useful for **humans**, **debugging**, and **scripts** when MCP is not in use. Agents in Cursor should prefer MCP (validation, hints, workflow tools).
+
+```bash
+cd server
+python cli.py db init
+
+export TM_API_KEY="tm_..."   # required for mutations
+
+python cli.py project create "Build Auth System" --desc "JWT-based authentication (40+ chars)"
+python cli.py task create <PROJECT_ID> "Research options" --desc "..."
+python cli.py project list --pretty
+```
+
+Every command emits **JSON** to stdout. Pass `--pretty` for formatted output.
+
+> **Note:** The CLI does not enforce all MCP validation rules (e.g. required `initial_spec`). New agent-driven work should go through MCP.
 
 ---
 
@@ -234,24 +258,16 @@ Change the password under **Settings** after first login.
 Ship the MCP server as a container with a persistent database volume.
 
 ```bash
-# Build
 docker build -t task-manager .
-
-# Run
-docker run -d \
-  --name task-manager \
-  -p 8000:8000 \
-  -v tm-data:/data \
-  task-manager
+docker run -d --name task-manager -p 8000:8000 -v tm-data:/data task-manager
 ```
 
 Agents connect to `http://<host>:8000/sse`.
 
-### Environment variables
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TM_DB_PATH` | `/data/task_manager.db` | SQLite database path |
+| `TM_API_KEY` | — | Optional default API key for the server process |
 
 ### Docker Compose
 
@@ -277,21 +293,38 @@ docker compose up -d
 
 ## Documentation Model
 
-Each project and task supports three independent markdown documents:
+Each project and task has three independent markdown documents:
 
 | Type | When to write | Purpose |
 |------|---------------|---------|
-| **spec** | At creation | Scope, objectives, acceptance criteria |
-| **progress** | During work | Running log of decisions and changes |
-| **closure** | At completion | Summary and outcomes |
+| **spec** | At creation (`initial_spec` on MCP create) | `## Objective`, `## Acceptance Criteria` |
+| **progress** | Each work session | Running log of findings and status |
+| **closure** | At completion | `## Summary` of what was delivered |
 
-**Rules of thumb**
+**Rules**
 
-- Never overwrite a spec to record progress — use the progress doc instead.
-- View all docs for a project at `/projects/{id}/docs` (tabbed by type, grouped under the task tree).
-- Agents write docs via CLI (`doc project set` / `doc task set`) or MCP (`doc_project_update` / `doc_task_update`).
+- Spec is written once at creation. If requirements change, add a **comment** — do not overwrite spec with progress.
+- Use `task_record_progress` (MCP) or `doc_type=progress` for ongoing updates.
+- Use `task_complete` or `doc_type=closure` before marking completed.
 
-Full workflow examples: [skill/task-management/references/examples.md](skill/task-management/references/examples.md)
+Worked MCP examples: [skill/task-management/references/examples.md](skill/task-management/references/examples.md)
+
+---
+
+## Strict Lifecycle Rules
+
+Enforced on the MCP API (no opt-out):
+
+| Transition / action | Requirement |
+|---------------------|-------------|
+| `project_create` / `task_create` | `initial_spec` required (incl. subtasks), min 80 chars, Objective + Acceptance Criteria |
+| `in_progress` | Spec doc must exist (`task_begin_work` or `task_update`) |
+| `blocked` | `blocker_reason` (min 20 chars) |
+| `failed` | `failure_reason` |
+| `completed` | Closure doc or `closure_note`; parent blocked while subtasks are active |
+| Deletes / archive | `reason` required where applicable |
+
+Validation errors return `remediation` steps. Prefer workflow tools over manual status changes.
 
 ---
 
@@ -302,30 +335,56 @@ my-agent-project/
 ├── Dockerfile
 ├── README.md
 ├── server/
-│   ├── schema.sql              # SQLite schema
-│   ├── db.py                   # Data access layer
-│   ├── cli.py                  # CLI (zero extra dependencies)
+│   ├── schema.sql
+│   ├── db.py
+│   ├── cli.py
 │   ├── mcp_server.py           # MCP server (stdio + HTTP/SSE)
+│   ├── mcp_instructions.py     # Server instructions at connect
+│   ├── mcp_resources.py        # Static playbook + templates
+│   ├── mcp_validation.py       # Strict lifecycle validation
+│   ├── mcp_workflows.py        # session_context, task_begin_work, …
+│   ├── mcp_tool_descriptions.py
+│   ├── mcp_read_hints.py / mcp_response_hints.py / mcp_enrich.py
 │   ├── requirements.txt
 │   ├── dashboard/
-│   │   ├── app.py              # FastAPI dashboard
-│   │   └── templates/          # Jinja2 HTML templates
-│   └── tests/
-│       ├── conftest.py
-│       ├── test_cli.py
-│       └── test_db.py
+│   └── tests/                  # pytest (db, cli, mcp_*, dashboard)
 ├── sdk/
-│   ├── task_orchestrator/      # Sequential subtask orchestrator (Phase 1)
-│   ├── examples/
-│   │   └── orchestrator.yaml
-│   └── README.md
+│   └── task_orchestrator/      # Sequential subtask orchestrator
 └── skill/
-    └── task-management/
+    └── task-management/        # Portable MCP-first agent skill
         ├── SKILL.md
         └── references/
-            ├── reference.md    # Full API + CLI reference
-            └── examples.md     # Worked examples
 ```
+
+---
+
+## MCP Tools & Resources
+
+### Workflow tools (start here)
+
+| Tool | Purpose |
+|------|---------|
+| `session_context` | Session orient — projects, `available_tasks`, optional task focus |
+| `task_begin_work` | Start task — spec, comments, `in_progress` |
+| `task_record_progress` | Progress doc + optional comment |
+| `task_complete` | Closure + completed (blocks if active subtasks) |
+
+### All tools (29)
+
+| Category | Tools |
+|----------|-------|
+| **Workflow** | `session_context`, `task_begin_work`, `task_record_progress`, `task_complete` |
+| **Projects** | `project_create`, `project_list`, `project_get`, `project_snapshot`, `project_update`, `project_archive`, `project_restore`, `project_delete` |
+| **Tasks** | `task_create`, `task_list`, `task_get`, `task_tree`, `task_subtree`, `task_update`, `task_move`, `task_delete` |
+| **Docs** | `doc_project_get`, `doc_project_update`, `doc_task_get`, `doc_task_update` |
+| **Comments** | `comment_add`, `comment_list` |
+| **Agents & audit** | `agent_onboard`, `agent_list`, `audit_log_get` |
+
+### Resources (4, read-only)
+
+`taskmgr://reference/playbook` · `taskmgr://templates/spec` · `taskmgr://templates/progress` · `taskmgr://templates/closure`
+
+Full parameters and setup: [skill/task-management/references/reference.md](skill/task-management/references/reference.md)
 
 ---
 
@@ -341,43 +400,31 @@ my-agent-project/
 | **Agents** | `agent onboard` · `list` · `audit` · `audit-log` |
 
 ```bash
-python cli.py --help                  # Top-level help
-python cli.py task create --help      # Per-command help
+python cli.py --help
+python cli.py task create --help
 ```
-
----
-
-## MCP Tools
-
-22 tools mirroring the CLI surface:
-
-| Category | Tools |
-|----------|-------|
-| **Projects** | `project_create`, `project_list`, `project_get`, `project_update`, `project_delete` |
-| **Tasks** | `task_create`, `task_list`, `task_get`, `task_tree`, `task_subtree`, `task_update`, `task_move`, `task_delete` |
-| **Docs** | `doc_project_get`, `doc_project_update`, `doc_task_get`, `doc_task_update` |
-| **Comments** | `comment_add`, `comment_list` |
-| **Agents & audit** | `agent_onboard`, `agent_list`, `audit_log_get` |
-
-Full schemas and parameters: [skill/task-management/references/reference.md](skill/task-management/references/reference.md)
 
 ---
 
 ## Agent Skill
 
-The `skill/task-management/` folder is portable. Copy it into your agent's skill directory:
+Portable skill for Cursor and other agent runtimes — **MCP-first**, with API key guardrails for context resets:
 
 ```bash
 cp -r skill/task-management/ ~/.cursor/skills/task-management/
 ```
 
-The skill covers onboarding, CLI workflows, MCP usage, doc conventions, and audit practices.
+| File | Contents |
+|------|----------|
+| [SKILL.md](skill/task-management/SKILL.md) | Session workflow, strict rules, key persistence |
+| [references/examples.md](skill/task-management/references/examples.md) | MCP worked examples |
+| [references/reference.md](skill/task-management/references/reference.md) | Setup, tools, CLI fallback |
 
 ---
 
 ## Task Orchestrator SDK
 
-For large tasks with many subtasks, run a headless agent **one subtask at a time** instead of one giant prompt. The SDK sequences work; each agent invocation fetches task details from TM via MCP.
+Run a headless agent **one subtask at a time** for large task trees. Each invocation fetches context from TM via MCP.
 
 ```bash
 cd sdk && pip install -e .
@@ -385,7 +432,7 @@ task-orchestrator plan --task <ROOT_TASK_ID> --config examples/orchestrator.yaml
 task-orchestrator run --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --dry-run
 ```
 
-See [sdk/README.md](sdk/README.md) for config and prerequisites.
+See [sdk/README.md](sdk/README.md).
 
 ---
 
@@ -395,14 +442,20 @@ See [sdk/README.md](sdk/README.md) for config and prerequisites.
 cd server
 pip install -r requirements.txt
 
-# Run tests (uses isolated test database)
+# Initialize real DB once (CLI subprocess tests use it)
+python cli.py db init
+
+# Run tests (isolated test DB for most suites)
 python -m pytest
 
-# Run dashboard with auto-reload
+# MCP tests only
+python -m pytest tests/test_mcp_*.py -q
+
+# Dashboard with reload (use port 8080 if MCP HTTP is on 8000)
 uvicorn dashboard.app:app --reload --port 8080 --app-dir .
 ```
 
-Tests cover the data layer, CLI output, fractional task ordering, documentation CRUD, and audit activity queries.
+Tests cover the data layer, CLI, MCP validation/workflows/resources, and dashboard UI.
 
 ---
 
