@@ -1,200 +1,268 @@
 ---
 name: task-management
-description: Manage projects, ordered tasks/subtasks, docs (spec/progress/closure), and comments via CLI or MCP. Use when initializing a project, creating or reordering tasks, tracking progress, writing documentation, or auditing work. Enable this skill for any multi-step project that benefits from structured task management. Prefer the CLI path for simplicity (no server process needed).
+description: Manage projects, ordered tasks/subtasks, docs (spec/progress/closure), and comments via the Task Manager MCP server. Use when planning work, tracking progress, writing structured docs, or auditing agent activity. Enable for any multi-step project. Always use MCP tools — not the CLI — unless the user explicitly asks for CLI or MCP is unavailable.
 ---
 
 # Task Management System
 
-Manage projects, ordered tasks (with subtasks), documentation (spec/progress/closure), comments, and audit trails — all backed by SQLite.
-Works **via CLI** (no server needed), **via MCP** (for IDE integration), or **via Web Dashboard**.
+Structured task management for AI agents and humans — projects, ordered task trees, three doc slots per entity (spec / progress / closure), comments, and a full audit trail. All data lives in one SQLite database.
 
-## Access Modes
+## Use MCP, not the CLI
 
-| Mode | How to use | Server needed? |
-|---|---|---|
-| **CLI** | `python cli.py <command>` | **No** — direct SQLite access |
-| **MCP (stdio)** | Via MCP client (Cursor, Claude Desktop) | Yes — `python mcp_server.py` |
-| **MCP (HTTP/SSE)** | Connect remote agents via SSE at `http://<host>:8000/sse` | Yes — `python mcp_server.py --http --port 8000` |
-| **MCP (Streamable HTTP)** | Stateless HTTP at `http://<host>:8000/mcp` | Yes — same server, no extra setup |
-| **Docker** | Deploy all-in-one container with persistent DB | Yes — `docker run -p 8000:8000 task-manager` |
-| **Web** | Browser at localhost:8000 | Yes — `cd dashboard && uvicorn app:app --reload --port 8000` |
+**Default for agents: MCP tools only.**
 
-All modes share the same database (`task_manager.db`) — you can switch freely.
+| Use MCP when | Use CLI only when |
+|---|---|
+| Working in Cursor or any MCP-connected IDE | User explicitly requests CLI |
+| Creating, updating, or reading tasks/projects | Debugging locally without MCP server |
+| Following this skill's workflow | Writing one-off shell scripts the user asked for |
+
+The CLI exists for humans and scripting. **Do not** reach for `python cli.py …` during normal agent work — it bypasses validation hints, workflow tools, and read-path guidance the MCP server provides.
+
+Setup and CLI fallback commands live in [`references/reference.md`](references/reference.md). Worked MCP patterns live in [`references/examples.md`](references/examples.md).
 
 ---
 
-## 🔑 Agent Onboarding (Required Before First Use)
+## Connect the MCP server
 
-Every agent must register before making any changes. This creates an identity recorded in the audit log.
+Configure once in `.cursor/mcp.json` (stdio) or point at HTTP/SSE. See [reference — Setup](references/reference.md#setup).
 
-### 1. Register your agent
+**Pin these read-only resources** every session (host “attach resource” UI):
 
-```bash
-python cli.py agent onboard --name "my-agent-name" --master "Your Name"
-```
+| URI | Purpose |
+|-----|---------|
+| `taskmgr://reference/playbook` | Full lifecycle rules and tool guidance |
+| `taskmgr://templates/spec` | `initial_spec` skeleton |
+| `taskmgr://templates/progress` | Progress doc skeleton |
+| `taskmgr://templates/closure` | Closure doc skeleton |
 
-Returns:
+Server instructions at connect time mirror the playbook; pinned resources survive context resets better than chat memory.
+
+---
+
+## API key — persist once, verify every session
+
+Mutations require an agent identity. **Context resets wipe chat memory — not your credential file.**
+
+### One-time onboarding
+
+1. Call MCP tool **`agent_onboard`** with `name` and `master_name` (only when no saved key exists).
+2. Copy the returned `api_key` immediately — it is shown **once**.
+3. Persist to a file **outside this repo** (never commit):
+
 ```json
 {
-  "agent_id": "uuid",
   "agent_name": "my-agent-name",
   "master_name": "Your Name",
   "api_key": "tm_<64-hex-chars>",
-  "created_at": "..."
+  "onboarded_at": "2026-07-02T12:00:00Z"
 }
 ```
 
-### 2. Save your credentials
+**Recommended path:** `~/.config/task-manager/credentials.json` (mode `600`).
 
-Save the returned JSON to a local file **outside this repo** (e.g. `~/.my-agent/onboarding.json`). This file is **never committed to git**.
+### Wire the key into the environment
 
-### 3. Authenticate every session
+Pick **one** (in order of preference):
 
-```bash
-export TM_API_KEY="tm_<your-key-here>"
+1. **MCP server `env` in `.cursor/mcp.json`** (local dev, file gitignored):
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "python3",
+      "args": ["/absolute/path/to/server/mcp_server.py"],
+      "env": {
+        "TM_API_KEY": "tm_<your-key>"
+      }
+    }
+  }
+}
 ```
 
-You can also pass it per-command with `--api-key "tm_..."`.
+2. **Shell profile** — `export TM_API_KEY=tm_…` in `~/.bashrc` / `~/.zshrc`.
+3. **Per-call** — pass `api_key` on each mutation tool (last resort; easy to forget).
 
-### 4. Verify
+Add to **global gitignore** (user machine, not this repo): `credentials.json`, `**/task-manager/credentials.json`, `.cursor/mcp.json` if it contains secrets.
 
-```bash
-python cli.py agent list --pretty
+### Session-start auth ritual (after every context reset)
+
+Do this **before any mutation**:
+
+```
+1. If TM_API_KEY is not set → read ~/.config/task-manager/credentials.json
+2. Call agent_list with api_key → must return ok
+3. If auth fails → STOP. Tell the user. Do NOT silently re-onboard (creates duplicate agents).
+4. Pass api_key on mutations OR rely on TM_API_KEY in MCP server env
 ```
 
-### 5. Lost your key?
+**Never** store the key in: repo files, task docs, comments, chat, skill files, or committed config.
 
-Ask an admin to reissue it from the dashboard at **/admin/agents**.
+### Lost key?
+
+Human reissues from dashboard **/admin/agents** — do not run `agent_onboard` again for the same identity.
 
 ---
 
-## 🧠 Agent Workflow Discipline
+## Session workflow (MCP)
 
-Follow these rules **every session** to keep the system useful.
+Read before write. Use composite tools first.
 
-### Before Starting Any Work
+### 1. Orient
 
-```bash
-# 1. See what exists
-python cli.py project list --pretty
-
-# 2. Check current project's task tree
-python cli.py task subtree <project_id> --pretty
-
-# 3. Read the spec doc for the task you plan to work on
-python cli.py doc task get <task_id> --type spec --pretty
-
-# 4. Check recent comments for context
-python cli.py comment list task <task_id> --pretty
+```
+session_context                          → list projects, pick one
+session_context project_id=<id>          → available_tasks, snapshot, blocked_tasks
+                                         → pass api_key for is_yours on your tasks
+session_context project_id=<id> task_id=<id>  → focused spec + recent comments
 ```
 
-### While Working
+Read tools (`task_get`, `project_snapshot`, `task_list`) return **warnings**, **next_steps**, and inline **recent_comments** — no need to chain `comment_list` after `task_get`.
 
-| Trigger | Action |
-|---------|--------|
-| Starting a task | `task update <id> --status in_progress` |
-| Making progress | Write a progress doc: `doc task set <id> "..." --type progress` |
-| Hitting a blocker | Comment why: `comment add task <id> "Blocked because..."` |
-| Discovery/decision | Add a comment with the reasoning |
-| Changing plans | Update the **progress** doc, not the spec |
-| Completing a task | Write a closure doc, then mark complete |
+### 2. Start work
 
-### Documentation Lifecycle
+```
+task_begin_work task_id=<id> api_key=…
+```
 
-Every task and project has **three document slots**:
+Sets `in_progress` if pending, returns spec + comments + checklist. **Fails without a spec doc.**
 
-| Doc Type | When to Write | Purpose | Example Content |
-|----------|--------------|---------|-----------------|
-| **spec** | At creation (plan) | What needs to be done, acceptance criteria | Objective, Scope, Acceptance Criteria checklist |
-| **progress** | During work | What's being done, what's working/pending | Current status, findings, blockers, decisions |
-| **closure** | On completion | Summary of what was delivered | What was built, key decisions, outcomes, metrics |
+### 3. During work
 
-**Rules:**
-- **Spec is written once** at creation. If requirements change, add a comment explaining why.
-- **Progress is updated** as you work. It can be overwritten each session with the latest state.
-- **Closure is written** once when the task is done. It should summarize the full delivery.
-- Each doc type is independent — writing progress doesn't overwrite the spec.
+| Situation | MCP tool |
+|-----------|----------|
+| Session findings | `task_record_progress` (progress doc + optional comment) |
+| Quick note / blocker | `comment_add` |
+| Blocked | `task_update` `status=blocked` + `blocker_reason` |
+| Failed attempt | `task_update` `status=failed` + `failure_reason` |
+| Reorder / reparent | `task_move` |
+| Fine-grained read | `doc_task_get`, `comment_list`, `audit_log_get` |
 
-### When to Write Comments vs Docs
+### 4. Finish
 
-| Use Comments When | Use Docs When |
-|------------------|---------------|
-| Quick updates during work ("Found a bug, fixing") | Structured progress report ("Milestone 1 done") |
-| Questions or discussion | Final delivery summary |
-| Noting a blocker | Full design documentation |
-| Linking to external resources | Detailed acceptance criteria |
-| Status for other team members | Things that need to survive the project |
+```
+task_complete task_id=<id> closure_note=… api_key=…
+```
 
-Comments are **append-only and timestamped** — they form a timeline. Docs are **structured and replaceable** at each stage.
+Writes closure doc and marks completed. **Blocks if active subtasks remain.**
+
+Granular alternative: `doc_task_update` `doc_type=closure` → `task_update` `status=completed`.
 
 ---
 
-## Quick Start (CLI — no server needed)
+## Strict rules (always enforced)
 
-```bash
-cd path/to/server
+There is no “lenient mode”. Validation errors include **`remediation`** steps.
 
-# Initialize the database (first time only)
-python cli.py db init
+| Rule | Detail |
+|------|--------|
+| **initial_spec required** | `project_create` and every `task_create` (including subtasks). Min 80 chars, `## Objective`, `## Acceptance Criteria`. |
+| **Spec before work** | `task_begin_work` and `status=in_progress` require a spec doc. |
+| **Parent completion** | Cannot complete a parent while any subtask is pending / in_progress / blocked. |
+| **blocked** | Requires `blocker_reason` (min 20 chars). |
+| **failed** | Requires `failure_reason`. |
+| **completed** | Requires closure doc or `closure_note` with `## Summary`. |
+| **Deletes** | Require `reason`. Prefer `project_archive` / `status=cancelled`. |
 
-# Create a project
-python cli.py project create "Build Auth System" --desc "JWT-based auth"
-
-# Create ordered tasks with spec docs
-TASK_ID=$(python cli.py task create <project_id> "Research libraries" 2>&1 >/dev/null)
-python cli.py doc task set $TASK_ID "# Spec\n## Objective\n..." --type spec
-
-# Check progress
-python cli.py project get <project_id>
-```
-
-Every command outputs **JSON** to stdout. The entity `id` is also printed to stderr:
-
-```bash
-PROJECT_ID=$(python cli.py project create "My App" 2>&1 >/dev/null)
-```
+Use pinned `taskmgr://templates/*` resources when writing specs, progress, and closure content.
 
 ---
 
-## Status Meanings
+## Documentation lifecycle
 
-| Status | Meaning |
-|---|---|
-| `pending` | Not started yet |
-| `in_progress` | Actively being worked on |
-| `completed` | Finished successfully |
-| `blocked` | Waiting on something else |
-| `failed` | Attempted but didn't work |
-| `cancelled` | No longer needed |
+Three independent doc slots per project and task:
 
-## Task Ordering
+| Doc | When | Purpose |
+|-----|------|---------|
+| **spec** | At creation (`initial_spec`) | Objective + acceptance criteria. **Write once.** |
+| **progress** | Each work session | Current status, findings, blockers. Overwritable. |
+| **closure** | On completion | `## Summary` of what was delivered. |
 
-Tasks use fractional indexing. When creating or moving:
-- **Omit** `--after` → task goes to the end of the sibling list
-- **Set** `--after <task_id>` → task goes right after that sibling
-- The system handles the math — no renumbering needed
+- Requirements changed → `comment_add` explaining why; **do not overwrite spec**.
+- Progress updates go in **progress**, never in spec.
+
+### Comments vs docs
+
+| Comments | Docs |
+|----------|------|
+| Quick timeline notes, blockers, questions | Structured deliverables that survive the project |
+| Append-only | spec / progress / closure slots |
 
 ---
 
-## 📚 Progressive Disclosure
+## Status values
 
-This skill is structured so the most important information is right here. For deeper detail, refer to these companion files:
+```
+pending → in_progress → completed | blocked | failed | cancelled
+```
 
-| File | When to Read | Relative Path |
-|------|-------------|---------------|
-| **CLI & API Reference** | When you need every parameter, tool signature, schema detail, or setup instruction | [`references/reference.md`](references/reference.md) |
-| **Usage Examples** | When you want worked examples of common patterns (feature building, bugfixing, session start, shell scripting, full lifecycle with docs and comments) | [`references/examples.md`](references/examples.md) |
+| Status | Notes |
+|--------|-------|
+| `pending` | Not started |
+| `in_progress` | Active — spec required |
+| `blocked` | Waiting — `blocker_reason` required |
+| `failed` | Attempted unsuccessfully — `failure_reason` required |
+| `completed` | Done — closure required; parents blocked until subtasks terminal |
+| `cancelled` | No longer needed — prefer over `task_delete` |
 
-### Tips
+---
 
-- **Session start**: Run `export TM_API_KEY="..."` then `python cli.py project list` to see what exists.
-- **Auth**: Set `TM_API_KEY` env var at session start. The `--api-key` flag overrides it per-command.
-- **First time**: Run `python cli.py agent onboard --name "X" --master "Y"` before making any changes.
-- **Save your key**: Store the onboarding response in `~/.my-agent/onboarding.json` (never in the repo).
-- **Capture IDs**: The entity ID is printed to stderr: `ID=$(python cli.py create ... 2>&1 >/dev/null)`
-- **Pretty output**: Add `--pretty` or `-p` for indented JSON (easier for human reading).
-- **Update as you go**: Keep statuses current — the web dashboard reflects changes in real-time.
-- **Three doc types**: Use `--type spec` for plans, `--type progress` for work logs, `--type closure` for summaries.
-- **Comments for timeline**: Use comments for quick updates, docs for structured information.
-- **Never overwrite a spec**: Write progress docs alongside it instead.
-- **Web dashboard**: Run the dashboard to see task trees, doc tabs, and comment feeds in a browser.
+## Multi-agent projects
+
+Several agents may share one project. Each picks **their** task from `available_tasks`:
+
+- Pass `api_key` on `session_context` and read tools → `is_yours` marks tasks you most recently set `in_progress`.
+- Do not assume exclusive ownership of a project.
+- Call `task_begin_work` only on the task you intend to own this session.
+
+---
+
+## MCP tool map (quick reference)
+
+| Goal | Tool |
+|------|------|
+| Register (once) | `agent_onboard` |
+| Session orient | `session_context` |
+| Start task | `task_begin_work` |
+| Log session work | `task_record_progress` |
+| Finish task | `task_complete` |
+| Create project/task | `project_create`, `task_create` |
+| Full project view | `project_snapshot` |
+| Single task detail | `task_get` |
+| Read/write docs | `doc_task_get`, `doc_task_update`, `doc_project_*` |
+| Timeline | `comment_add`, `comment_list` |
+| History | `audit_log_get` |
+
+Full signatures and schemas: [`references/reference.md`](references/reference.md#mcp-tools).
+
+---
+
+## Other access modes (secondary)
+
+| Mode | When |
+|------|------|
+| **Web dashboard** | Human visibility — login `admin`/`admin`, port 8000 |
+| **CLI** | User-requested scripting or MCP unavailable — see reference |
+| **Docker** | Remote MCP over HTTP — see reference |
+
+All modes share `server/task_manager.db`.
+
+---
+
+## Progressive disclosure
+
+| File | Read when |
+|------|-----------|
+| [`references/examples.md`](references/examples.md) | Worked MCP flows (feature build, session start, full lifecycle) |
+| [`references/reference.md`](references/reference.md) | Setup, every tool parameter, CLI fallback, Docker |
+
+### Session checklist (copy mentally each reset)
+
+- [ ] Credentials file or `TM_API_KEY` available; `agent_list` succeeds
+- [ ] Playbook resource pinned (`taskmgr://reference/playbook`)
+- [ ] `session_context` before creating anything new
+- [ ] `task_begin_work` before code changes
+- [ ] `task_record_progress` before ending session
+- [ ] `task_complete` when acceptance criteria met
+- [ ] Never put API keys in repo, docs, or comments

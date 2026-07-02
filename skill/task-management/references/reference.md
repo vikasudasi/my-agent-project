@@ -1,5 +1,7 @@
 # Task Management — Reference
 
+> **Agents:** use **MCP tools** (see [SKILL.md](../SKILL.md)). The CLI section below is for humans, debugging, and explicit user-requested scripting only.
+
 ## Setup
 
 ### Prerequisites
@@ -168,9 +170,59 @@ Note: Some MCP clients do not distinguish between SSE and Streamable HTTP in the
 }
 ```
 
-## CLI Usage (Zero-Setup Path)
+### MCP resources (pin in host)
 
-The CLI wraps the same database directly — no server process needed. Every command outputs **JSON** to stdout and echoes the entity ID to stderr for easy shell scripting.
+Static read-only resources — no `api_key` required:
+
+| URI | Content |
+|-----|---------|
+| `taskmgr://reference/playbook` | Agent playbook (lifecycle + tools) |
+| `taskmgr://templates/spec` | Spec / `initial_spec` template |
+| `taskmgr://templates/progress` | Progress doc template |
+| `taskmgr://templates/closure` | Closure doc template |
+
+List via `resources/list`; read via `resources/read`.
+
+### MCP credentials in Cursor
+
+Pass `TM_API_KEY` through the MCP server env block so mutations work after context resets:
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "python3",
+      "args": ["/absolute/path/to/server/mcp_server.py"],
+      "env": {
+        "TM_API_KEY": "tm_<your-key>"
+      }
+    }
+  }
+}
+```
+
+Store the key in `~/.config/task-manager/credentials.json` as backup. **Never commit** `mcp.json` with secrets.
+
+### Workflow tools (preferred over granular calls)
+
+| Tool | Purpose |
+|------|---------|
+| `session_context` | Session start — project list or `available_tasks`, optional `task_id` focus |
+| `task_begin_work` | Start task — spec + comments + set `in_progress` (requires spec doc) |
+| `task_record_progress` | Upsert progress doc + optional comment |
+| `task_complete` | Write closure + mark completed (blocks if active subtasks) |
+
+Read tools return `warnings` and `next_steps`. Validation errors include `remediation`.
+
+### Strict validation (always on)
+
+- `initial_spec` required on `project_create` and all `task_create` (incl. subtasks)
+- `in_progress` requires spec; `blocked`/`failed`/`completed` have required fields (see SKILL.md)
+- Parent cannot complete while subtasks are active
+
+## CLI Usage (fallback — not for normal agent work)
+
+The CLI wraps the same database directly — no server process needed. **Agents should use MCP instead.** Every command outputs **JSON** to stdout and echoes the entity ID to stderr for easy shell scripting.
 
 ### Capturing IDs in Shell
 
@@ -261,6 +313,10 @@ The system uses SQLite. The database file is `server/task_manager.db`.
 
 Tasks use fractional indexing. Each task has a `rank` (float). To insert task C between tasks A (rank=100) and B (rank=200), the server computes rank = (100+200)/2 = 150. No renumbering needed.
 
+## MCP tools
+
+All tools return JSON with `{ "ok": true, "data": ... }` on success. Mutations may include `warnings`, `next_steps`; errors include `code`, `field`, `remediation`.
+
 ## API Reference
 
 All tools return JSON with this structure:
@@ -287,10 +343,12 @@ All tools return JSON with this structure:
 #### `project_create`
 
 **Parameters:**
-- `name` (string, required) — Project name
-- `description` (string, optional) — Description
+- `name` (string, required) — Project name (min 3 chars)
+- `description` (string, required) — Min 40 chars
+- `initial_spec` (string, required) — Markdown spec; min 80 chars, `## Objective`, `## Acceptance Criteria`
+- `api_key` (string, required)
 
-**Returns:** The created project object.
+**Returns:** Created project with `docs_summary`.
 
 ---
 
@@ -337,11 +395,13 @@ All tools return JSON with this structure:
 **Parameters:**
 - `project_id` (string, required)
 - `title` (string, required)
-- `description` (string, optional)
+- `description` (string, required) — Min 40 chars
+- `initial_spec` (string, required) — Required for subtasks too
 - `parent_id` (string, optional) — Set for subtasks
 - `after_task_id` (string, optional) — Positional placement
+- `api_key` (string, required)
 
-**Returns:** The created task object.
+**Returns:** Created task with `docs_summary` and `created_by`.
 
 ---
 
@@ -387,11 +447,28 @@ All tools return JSON with this structure:
 
 **Parameters:**
 - `task_id` (string, required)
-- `title` (string, optional)
-- `description` (string, optional)
+- `api_key` (string, required)
+- `title`, `description` (optional)
 - `status` (enum, optional) — `pending` | `in_progress` | `completed` | `blocked` | `failed` | `cancelled`
+- `blocker_reason` (string, required when `status=blocked`)
+- `failure_reason` (string, required when `status=failed`)
+- `closure_note` (string, required when `status=completed` and no closure doc)
 
-**Returns:** Updated task object.
+**Returns:** Updated task with hints. Prefer `task_begin_work` / `task_complete` for standard flow.
+
+---
+
+#### `session_context`
+
+**Parameters:** `project_id` (optional), `task_id` (optional), `api_key` (optional for `is_yours`)
+
+**Returns:** Project picker or project session with `available_tasks`, `snapshot`, `blocked_tasks`, optional `focused_task`.
+
+---
+
+#### `task_begin_work` / `task_record_progress` / `task_complete`
+
+Composite workflow tools. See [SKILL.md](../SKILL.md). All require `api_key`.
 
 ---
 
