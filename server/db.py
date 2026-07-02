@@ -110,6 +110,41 @@ def delete_project(project_id: str) -> bool:
     return deleted
 
 
+def list_projects_with_progress(
+    status: Optional[str] = None, q: Optional[str] = None
+) -> list[dict]:
+    """List projects with task counts in a single query (avoids N+1)."""
+    with get_connection() as conn:
+        query = (
+            "SELECT p.*, "
+            "COUNT(t.id) AS total_tasks, "
+            "COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) "
+            "AS completed_tasks "
+            "FROM projects p "
+            "LEFT JOIN tasks t ON t.project_id = p.id "
+            "WHERE 1=1"
+        )
+        params: list = []
+        if status:
+            query += " AND p.status = ?"
+            params.append(status)
+        if q:
+            query += " AND (p.name LIKE ? OR p.description LIKE ?)"
+            like = f"%{q}%"
+            params.extend([like, like])
+        query += " GROUP BY p.id ORDER BY p.created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        total = d.get("total_tasks") or 0
+        completed = d.get("completed_tasks") or 0
+        d["progress_pct"] = round((completed / total * 100)) if total > 0 else 0
+        result.append(d)
+    return result
+
+
 def get_project_progress(project_id: str) -> Optional[dict]:
     with get_connection() as conn:
         proj = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -641,15 +676,40 @@ def get_audit_log(entity_type: str, entity_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_audit_log_by_agent(agent_name: str) -> list[dict]:
+def get_audit_log_by_agent(agent_name: str, limit: int = 100) -> list[dict]:
     """Get audit log entries for a specific agent."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM agent_audit_log WHERE agent_name = ? "
-            "ORDER BY created_at DESC LIMIT 100",
-            (agent_name,),
+            "ORDER BY created_at DESC LIMIT ?",
+            (agent_name, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_audit_log_by_agent_paginated(
+    agent_name: str, limit: int = 50, offset: int = 0
+) -> dict:
+    """Get paginated audit log entries for a specific agent."""
+    with get_connection() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM agent_audit_log WHERE agent_name = ?",
+            (agent_name,),
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM agent_audit_log WHERE agent_name = ? "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (agent_name, limit, offset),
+        ).fetchall()
+    page = (offset // limit) + 1 if limit else 1
+    pages = max(1, (total + limit - 1) // limit) if limit else 1
+    return {
+        "entries": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "limit": limit,
+    }
 
 
 def get_project_audit_log(project_id: str, limit: int = 100) -> list[dict]:
@@ -665,6 +725,40 @@ def get_project_audit_log(project_id: str, limit: int = 100) -> list[dict]:
             (project_id, project_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_project_audit_log_paginated(
+    project_id: str, limit: int = 50, offset: int = 0
+) -> dict:
+    """Paginated audit entries for a project and all its tasks."""
+    base_where = (
+        "(a.entity_type = 'project' AND a.entity_id = ?) "
+        "OR (a.entity_type = 'task' AND t.project_id = ?)"
+    )
+    with get_connection() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM agent_audit_log a "
+            f"LEFT JOIN tasks t ON a.entity_type = 'task' AND a.entity_id = t.id "
+            f"WHERE {base_where}",
+            (project_id, project_id),
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT a.*, t.title AS task_title "
+            f"FROM agent_audit_log a "
+            f"LEFT JOIN tasks t ON a.entity_type = 'task' AND a.entity_id = t.id "
+            f"WHERE {base_where} "
+            f"ORDER BY a.created_at DESC LIMIT ? OFFSET ?",
+            (project_id, project_id, limit, offset),
+        ).fetchall()
+    page = (offset // limit) + 1 if limit else 1
+    pages = max(1, (total + limit - 1) // limit) if limit else 1
+    return {
+        "entries": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "limit": limit,
+    }
 
 
 def get_recent_activity(limit: int = 25) -> list[dict]:

@@ -1,0 +1,9 @@
+<div class="border-l-2 border-gray-200 pl-3" id="comment-{{ c.id }}">
+    <div class="flex items-center gap-2 text-xs text-gray-500">
+        {% if c.author %}
+        <span class="font-medium text-gray-700">{{ c.author }}</span>
+        {% endif %}
+        <span>{{ c.created_at }}</span>
+    </div>
+    <p class="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{{ c.content }}</p>
+</div>

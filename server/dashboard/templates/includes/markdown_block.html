@@ -1,4 +1,5 @@
-<div class="markdown-block {{ extra_class | default('') }}">
-    <textarea class="markdown-source hidden" readonly>{{ content }}</textarea>
-    <div class="markdown-output markdown-body text-gray-700 text-sm"></div>
+{% if content and content.strip() %}
+<div class="markdown-body text-gray-700 text-sm {{ extra_class | default('') }}">
+    {{ content | markdown | safe }}
 </div>
+{% endif %}

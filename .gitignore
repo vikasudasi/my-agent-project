@@ -23,3 +23,6 @@ __pycache__/
 
 # Task orchestrator run logs
 .tm-runs/
+
+# Dashboard frontend build
+server/dashboard/node_modules/
