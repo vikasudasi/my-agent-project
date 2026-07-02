@@ -122,7 +122,7 @@
     </div>
     <div class="p-6">
         <p class="text-xs text-gray-500 mb-4">Quick preview — open Docs to view or edit each type.</p>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="space-y-4">
             {% for dt, doc_content in [('spec', doc_spec), ('progress', doc_progress), ('closure', doc_closure)] %}
             <div class="border border-gray-200 rounded-lg p-4">
                 <h3 class="text-sm font-medium text-gray-700 capitalize mb-2">{{ dt }}</h3>
