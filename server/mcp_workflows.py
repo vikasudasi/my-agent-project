@@ -9,7 +9,6 @@ from db import (
     get_project_progress,
     get_task,
     get_task_doc_meta,
-    get_task_last_in_progress_agent,
     get_task_subtask_stats,
     get_task_subtree,
     list_comments,
@@ -29,8 +28,8 @@ SESSION_CHECKLIST = [
 ]
 
 PROJECT_SESSION_CHECKLIST = [
-    "Multiple agents may work on this project — pick YOUR task, not another agent's",
-    "Review available_tasks (all workable items) and check last_active_agent before claiming work",
+    "Multiple agents may work on this project — pick YOUR task from available_tasks",
+    "Use task descriptions and my_tasks (with api_key) to choose the right work item",
     "Pass task_id to focus this session on the task you intend to work on",
     "Call task_begin_work on your chosen task_id before making changes",
     *SESSION_CHECKLIST,
@@ -55,10 +54,10 @@ def _summarize_task_for_session(task: dict) -> dict[str, Any]:
     return {
         "id": tid,
         "title": task["title"],
+        "description": task.get("description") or "",
         "status": task["status"],
         "parent_id": task.get("parent_id"),
         "has_spec": docs.get("spec", {}).get("exists", False),
-        "last_active_agent": get_task_last_in_progress_agent(tid),
     }
 
 

@@ -68,6 +68,13 @@ class TestSessionContext:
         finally:
             db.delete_project(other["id"])
 
+    def test_available_tasks_include_description(self, project):
+        desc = "Implement the payment gateway integration with Stripe"
+        task = db.create_task(project["id"], "Payments", desc)
+        available = list_available_tasks(project["id"])
+        entry = next(t for t in available if t["id"] == task["id"])
+        assert entry["description"] == desc
+
     def test_my_tasks_for_agent(self, project, agent):
         task = db.create_task(project["id"], "Agent task", "A" * 40)
         run_task_begin_work(
@@ -81,17 +88,6 @@ class TestSessionContext:
         )
         assert len(result["my_tasks"]) == 1
         assert result["my_tasks"][0]["id"] == task["id"]
-
-    def test_last_active_agent_on_available_tasks(self, project, agent):
-        task = db.create_task(project["id"], "Claimed task", "A" * 40)
-        run_task_begin_work(
-            task["id"],
-            agent_name=agent["name"],
-            master_name=agent["master_name"],
-        )
-        available = list_available_tasks(project["id"])
-        entry = next(t for t in available if t["id"] == task["id"])
-        assert entry["last_active_agent"] == agent["name"]
 
     def test_session_context_unknown_project_raises(self):
         with pytest.raises(ValidationError) as exc:

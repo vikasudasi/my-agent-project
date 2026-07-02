@@ -996,7 +996,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                     next_steps.append(f"task_begin_work task_id={my_tasks[0]['id']}  # resume your task")
                 elif result.get("available_tasks"):
                     next_steps.append(
-                        "Pick YOUR task from available_tasks (check last_active_agent), "
+                        "Pick YOUR task from available_tasks (use descriptions and my_tasks), "
                         "then session_context with task_id and task_begin_work"
                     )
                 else:

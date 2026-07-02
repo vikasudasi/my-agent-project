@@ -14,8 +14,8 @@ Before creating or changing anything:
 3. session_context project_id=<id> task_id=<id> — focus on YOUR task (spec, comments, project snapshot).
 4. task_begin_work task_id=<id> — set in_progress and start implementation.
 
-In shared projects, always pass task_id for the task you own. Check available_tasks.last_active_agent
-to avoid taking a task another agent is working on. Pass api_key to see my_tasks you previously started.
+In shared projects, always pass task_id for the task you own. Use my_tasks (with api_key)
+or read task descriptions in available_tasks to pick the right work.
 
 Granular alternatives when you need fine control:
 - project_list → project_snapshot → doc_task_get → comment_list
