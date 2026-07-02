@@ -17,7 +17,8 @@ from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
-from mcp.types import Tool, TextContent, CallToolResult
+from mcp.types import Tool, TextContent, CallToolResult, Resource
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from db import (
     init_db,
@@ -61,6 +62,7 @@ from mcp_enrich import (
     list_projects_enriched,
 )
 from mcp_instructions import MCP_INSTRUCTIONS
+from mcp_resources import list_static_resources, read_static_resource
 from mcp_read_hints import build_read_hints
 from mcp_response_hints import build_hints
 from mcp_tool_descriptions import DOC_TYPE_PROP, STATUS_TASK_PROP, TOOL_DESCRIPTIONS
@@ -693,6 +695,16 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+
+
+@server.list_resources()
+async def list_resources() -> list[Resource]:
+    return list_static_resources()
+
+
+@server.read_resource()
+async def read_resource(uri: str) -> list[ReadResourceContents]:
+    return list(read_static_resource(uri))
 
 
 @server.call_tool()
