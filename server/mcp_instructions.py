@@ -8,11 +8,12 @@ Task Management System for AI Agents — use these MCP tools to plan, track, and
 - Pass api_key on every mutation, or set TM_API_KEY in the environment.
 
 ## Session start (read before write)
-Before creating or changing anything:
-1. project_list — see active projects and progress.
-2. project_snapshot — full view: task tree, docs summary, recent activity (preferred over piecemeal reads).
-3. doc_task_get (doc_type=spec) — read the spec for the task you will work on.
-4. comment_list — check recent context on that task or project.
+Before creating or changing anything, prefer composite workflow tools:
+1. session_context — lists projects, optional snapshot, suggested next task (replaces project_list + project_snapshot ritual).
+2. task_begin_work — read spec + comments and set in_progress in one call.
+
+Granular alternatives when you need fine control:
+- project_list → project_snapshot → doc_task_get → comment_list
 
 ## Planning and task structure
 - Create projects with project_create: meaningful description (40+ chars) and initial_spec when possible.
@@ -23,12 +24,13 @@ Before creating or changing anything:
 ## While working
 | Situation | Tool / action |
 |-----------|---------------|
-| Starting work | task_update status=in_progress |
-| Findings, decisions, session state | doc_task_update doc_type=progress |
+| Starting work | task_begin_work (preferred) or task_update status=in_progress |
+| Findings, decisions, session state | task_record_progress (preferred) or doc_task_update doc_type=progress |
 | Blocked | task_update status=blocked + blocker_reason; comment_add with details |
 | Quick note or question | comment_add (append-only timeline) |
 | Requirements changed | comment_add explaining why — do not overwrite spec |
 | Reorder or reparent | task_move |
+| Finishing | task_complete (preferred) or doc_task_update closure + task_update completed |
 
 ## Documentation lifecycle
 Each project and task has three independent doc slots:
@@ -39,9 +41,9 @@ Each project and task has three independent doc slots:
 Never put progress updates in the spec doc. Use doc_task_update with the correct doc_type.
 
 ## Completing work
-1. doc_task_update doc_type=closure (include ## Summary).
-2. task_update status=completed (use closure_note if no closure doc yet).
-3. If this was a subtask, check parent subtask_stats via task_get or project_snapshot before marking the parent complete.
+Preferred: task_complete with closure or closure_note (writes closure doc and marks completed).
+Manual: doc_task_update doc_type=closure, then task_update status=completed.
+If this was a subtask, check parent subtask_stats before marking the parent complete.
 
 ## Comments vs docs
 - Comments: quick updates, blockers, questions, links — timestamped timeline.

@@ -5,8 +5,9 @@ from mcp_instructions import MCP_INSTRUCTIONS
 
 def test_mcp_instructions_covers_key_workflows():
     assert "agent_onboard" in MCP_INSTRUCTIONS
-    assert "project_snapshot" in MCP_INSTRUCTIONS
-    assert "doc_task_get" in MCP_INSTRUCTIONS
+    assert "session_context" in MCP_INSTRUCTIONS
+    assert "task_begin_work" in MCP_INSTRUCTIONS
+    assert "task_complete" in MCP_INSTRUCTIONS
     assert "## Objective" in MCP_INSTRUCTIONS
     assert "project_archive" in MCP_INSTRUCTIONS
     assert "blocker_reason" in MCP_INSTRUCTIONS

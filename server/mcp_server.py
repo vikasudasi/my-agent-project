@@ -73,6 +73,7 @@ from mcp_validation import (
     require_text,
     MIN_REASON_LEN,
 )
+from mcp_workflows import run_session_context, run_task_begin_work, run_task_record_progress, run_task_complete
 
 server = Server(
     "task-manager",
@@ -96,6 +97,7 @@ _MUTATION_TOOLS = {
     "task_create", "task_update", "task_move", "task_delete",
     "doc_project_update", "doc_task_update",
     "comment_add",
+    "task_begin_work", "task_record_progress", "task_complete",
 }
 
 _DESC_PROP = {
@@ -502,6 +504,100 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="session_context",
+            description=_tool("session_context"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "Focus project. Omit to auto-select one with active work.",
+                    },
+                    "project_status": {
+                        "type": "string",
+                        "enum": ["active", "archived", "completed", "all"],
+                        "description": "Filter for project list (default: active)",
+                    },
+                    "include_snapshot": {
+                        "type": "boolean",
+                        "description": "Include full project snapshot when focused (default: true)",
+                    },
+                    "auto_focus": {
+                        "type": "boolean",
+                        "description": "Auto-pick focus project when project_id omitted (default: true)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="task_begin_work",
+            description=_tool("task_begin_work"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "comment_limit": {
+                        "type": "integer",
+                        "description": "Max recent comments to include (default: 10)",
+                    },
+                    "comment_since": {
+                        "type": "string",
+                        "description": "ISO timestamp — only comments after this time",
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "api_key"],
+            },
+        ),
+        Tool(
+            name="task_record_progress",
+            description=_tool("task_record_progress"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "content": {
+                        "type": "string",
+                        "minLength": 50,
+                        "description": "Progress doc markdown (session findings and status)",
+                    },
+                    "comment": {
+                        "type": "string",
+                        "minLength": 10,
+                        "description": "Optional timeline comment to add alongside progress doc",
+                    },
+                    "comment_type": {
+                        "type": "string",
+                        "enum": ["note", "blocker", "decision", "question"],
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "content", "api_key"],
+            },
+        ),
+        Tool(
+            name="task_complete",
+            description=_tool("task_complete"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "closure": {
+                        "type": "string",
+                        "minLength": 80,
+                        "description": "Full closure markdown with ## Summary (preferred)",
+                    },
+                    "closure_note": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Short summary if full closure markdown not provided",
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "api_key"],
+            },
+        ),
+        Tool(
             name="agent_onboard",
             description=_tool("agent_onboard"),
             inputSchema={
@@ -803,6 +899,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 "char_count": len(content),
             }
             return _ok_mutation(doc_payload, name, arguments=arguments)
+
+        elif name == "doc_task_get":
             doc_type = arguments.get("doc_type", "spec")
             if not get_task(arguments["task_id"]):
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
@@ -850,6 +948,66 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 since=arguments.get("since"),
             )
             return _ok(result, tool=name)
+
+        # ---- Workflow tools ----
+        elif name == "session_context":
+            result = run_session_context(
+                project_id=arguments.get("project_id"),
+                project_status=arguments.get("project_status", "active"),
+                include_snapshot=arguments.get("include_snapshot", True),
+                auto_focus=arguments.get("auto_focus", True),
+            )
+            next_steps: list[str] = []
+            suggested = result.get("suggested_next_task")
+            focus_id = result.get("focus_project_id")
+            if suggested:
+                next_steps.append(f"task_begin_work task_id={suggested['id']}")
+            elif focus_id:
+                next_steps.append(f"task_create on project {focus_id} to add work items")
+            else:
+                next_steps.append("project_create to start a new project")
+            return _ok(result, tool=name, next_steps=next_steps)
+
+        elif name == "task_begin_work":
+            payload = run_task_begin_work(
+                arguments["task_id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                comment_limit=arguments.get("comment_limit", 10),
+                comment_since=arguments.get("comment_since"),
+            )
+            warnings = payload.pop("warnings", [])
+            next_steps = ["Call task_record_progress when you have session findings"]
+            if not payload["spec"]["exists"]:
+                next_steps.insert(0, f"doc_task_update task_id={arguments['task_id']} doc_type=spec")
+            return _ok(payload, tool=name, warnings=warnings or None, next_steps=next_steps)
+
+        elif name == "task_record_progress":
+            payload = run_task_record_progress(
+                arguments["task_id"],
+                arguments["content"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                comment=arguments.get("comment"),
+                comment_type=arguments.get("comment_type"),
+            )
+            return _ok(
+                payload,
+                tool=name,
+                next_steps=[f"task_complete task_id={arguments['task_id']} when acceptance criteria are met"],
+            )
+
+        elif name == "task_complete":
+            payload = run_task_complete(
+                arguments["task_id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                closure=arguments.get("closure"),
+                closure_note=arguments.get("closure_note"),
+            )
+            warnings = payload.pop("warnings", None)
+            next_steps = payload.pop("next_steps", None)
+            return _ok(payload, tool=name, warnings=warnings, next_steps=next_steps)
 
         # ---- Agent & Audit ----
         elif name == "agent_onboard":

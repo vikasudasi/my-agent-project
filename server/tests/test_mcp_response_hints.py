@@ -5,9 +5,6 @@ from mcp_response_hints import build_hints
 
 
 class TestProjectCreateHints:
-    def test_warns_without_initial_spec(self, project):
-        db.delete_project(project["id"])
-
     def test_project_create_without_spec(self):
         project = db.create_project("Hint Project", "A" * 40)
         try:

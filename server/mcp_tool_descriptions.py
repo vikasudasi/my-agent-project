@@ -104,7 +104,26 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "task_update": (
         "Change task fields or lifecycle status. Starting work: status=in_progress (after reading "
         "spec). Blocked: status=blocked + blocker_reason. Done: write closure doc first, then "
-        "status=completed (or closure_note if no doc yet). No longer needed: status=cancelled."
+        "status=completed (or closure_note if no doc yet). No longer needed: status=cancelled. "
+        "Prefer task_begin_work, task_record_progress, and task_complete for the standard workflow."
+    ),
+    "session_context": (
+        "Primary session-start tool. Lists active projects, auto-selects a focus project, "
+        "returns snapshot, suggested next task, blocked tasks, and a session checklist. "
+        "Prefer over calling project_list + project_snapshot separately."
+    ),
+    "task_begin_work": (
+        "Start working on a task in one call: returns spec, recent comments, checklist, and sets "
+        "status=in_progress if pending. Call after session_context picks a task. Read-only on "
+        "blocked/completed tasks."
+    ),
+    "task_record_progress": (
+        "Record session progress in one call: upserts progress doc and optionally adds a timeline "
+        "comment. Use during work instead of separate doc_task_update + comment_add calls."
+    ),
+    "task_complete": (
+        "Finish a task in one call: writes closure doc (closure markdown or closure_note) and marks "
+        "completed. Warns on incomplete subtasks. Prefer over doc_task_update + task_update."
     ),
 }
 
