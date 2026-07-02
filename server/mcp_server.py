@@ -526,8 +526,8 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         **_API_KEY_PROP,
                         "description": (
-                            "Optional. When provided, includes my_tasks — in_progress tasks "
-                            "you most recently started in this project."
+                            "Optional. When provided, sets is_yours on available_tasks entries "
+                            "for in_progress tasks you most recently started."
                         ),
                     },
                     "project_status": {
@@ -989,14 +989,15 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                     next_steps.append("project_create to start a new project")
             else:
                 chosen_task = arguments.get("task_id")
-                my_tasks = result.get("my_tasks") or []
+                available = result.get("available_tasks") or []
+                yours = [t for t in available if t.get("is_yours")]
                 if chosen_task:
                     next_steps.append(f"task_begin_work task_id={chosen_task}")
-                elif len(my_tasks) == 1:
-                    next_steps.append(f"task_begin_work task_id={my_tasks[0]['id']}  # resume your task")
-                elif result.get("available_tasks"):
+                elif len(yours) == 1:
+                    next_steps.append(f"task_begin_work task_id={yours[0]['id']}  # resume your task")
+                elif available:
                     next_steps.append(
-                        "Pick YOUR task from available_tasks (use descriptions and my_tasks), "
+                        "Pick YOUR task from available_tasks (is_yours or descriptions), "
                         "then session_context with task_id and task_begin_work"
                     )
                 else:

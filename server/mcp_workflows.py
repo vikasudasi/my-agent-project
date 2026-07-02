@@ -29,7 +29,7 @@ SESSION_CHECKLIST = [
 
 PROJECT_SESSION_CHECKLIST = [
     "Multiple agents may work on this project — pick YOUR task from available_tasks",
-    "Use task descriptions and my_tasks (with api_key) to choose the right work item",
+    "Pass api_key to mark your tasks with is_yours in available_tasks",
     "Pass task_id to focus this session on the task you intend to work on",
     "Call task_begin_work on your chosen task_id before making changes",
     *SESSION_CHECKLIST,
@@ -48,10 +48,10 @@ def _flatten_task_tree(nodes: list[dict]) -> list[dict]:
     return flat
 
 
-def _summarize_task_for_session(task: dict) -> dict[str, Any]:
+def _summarize_task_for_session(task: dict, *, is_yours: Optional[bool] = None) -> dict[str, Any]:
     tid = task["id"]
     docs = get_docs_summary("task", tid)
-    return {
+    summary: dict[str, Any] = {
         "id": tid,
         "title": task["title"],
         "description": task.get("description") or "",
@@ -59,17 +59,29 @@ def _summarize_task_for_session(task: dict) -> dict[str, Any]:
         "parent_id": task.get("parent_id"),
         "has_spec": docs.get("spec", {}).get("exists", False),
     }
+    if is_yours is not None:
+        summary["is_yours"] = is_yours
+    return summary
 
 
-def list_available_tasks(project_id: str) -> list[dict[str, Any]]:
+def list_available_tasks(
+    project_id: str, *, agent_name: Optional[str] = None
+) -> list[dict[str, Any]]:
     """All in_progress and pending tasks in tree order — multiple agents pick from this list."""
+    yours_ids: set[str] = set()
+    if agent_name:
+        yours_ids = {
+            t["id"] for t in get_agent_resumed_tasks_in_project(agent_name, project_id)
+        }
+
     tree = get_task_subtree(project_id)
     flat = _flatten_task_tree(tree)
     available: list[dict[str, Any]] = []
     for status in ("in_progress", "pending"):
         for task in flat:
             if task.get("status") == status:
-                available.append(_summarize_task_for_session(task))
+                is_yours = task["id"] in yours_ids if agent_name else None
+                available.append(_summarize_task_for_session(task, is_yours=is_yours))
     return available
 
 
@@ -124,13 +136,9 @@ def run_session_context(
         "mode": "project_session",
         "project_id": project_id,
         "project": project,
-        "available_tasks": list_available_tasks(project_id),
+        "available_tasks": list_available_tasks(project_id, agent_name=agent_name),
         "session_checklist": list(PROJECT_SESSION_CHECKLIST),
     }
-
-    if agent_name:
-        resumed = get_agent_resumed_tasks_in_project(agent_name, project_id)
-        result["my_tasks"] = [_summarize_task_for_session(t) for t in resumed]
 
     if include_snapshot:
         snapshot = build_project_snapshot(project_id)

@@ -109,10 +109,9 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "session_context": (
         "Session-start tool scoped to one project. Without project_id: returns project list. "
-        "With project_id: returns available_tasks (all in_progress/pending — multiple agents pick "
-        "different tasks), blocked_tasks, and snapshot. Add task_id to focus on YOUR task. "
-        "Optional api_key returns my_tasks you most recently started. Never assigns a single task "
-        "to all agents."
+        "With project_id: returns available_tasks (all in_progress/pending with descriptions). "
+        "Optional api_key sets is_yours on tasks you most recently started. Add task_id to "
+        "focus on your task. Multiple agents each pick different tasks from available_tasks."
     ),
     "task_begin_work": (
         "Start working on a task in one call: returns spec, recent comments, checklist, and sets "

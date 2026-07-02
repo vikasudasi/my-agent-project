@@ -75,19 +75,24 @@ class TestSessionContext:
         entry = next(t for t in available if t["id"] == task["id"])
         assert entry["description"] == desc
 
-    def test_my_tasks_for_agent(self, project, agent):
+    def test_is_yours_on_available_tasks_with_api_key(self, project, agent):
         task = db.create_task(project["id"], "Agent task", "A" * 40)
+        other = db.create_task(project["id"], "Other task", "B" * 40)
         run_task_begin_work(
             task["id"],
             agent_name=agent["name"],
             master_name=agent["master_name"],
         )
-        result = run_session_context(
-            project_id=project["id"],
-            agent_name=agent["name"],
-        )
-        assert len(result["my_tasks"]) == 1
-        assert result["my_tasks"][0]["id"] == task["id"]
+        result = run_session_context(project_id=project["id"], agent_name=agent["name"])
+        assert "my_tasks" not in result
+        by_id = {t["id"]: t for t in result["available_tasks"]}
+        assert by_id[task["id"]]["is_yours"] is True
+        assert by_id[other["id"]]["is_yours"] is False
+
+    def test_is_yours_omitted_without_agent(self, project, task):
+        result = run_session_context(project_id=project["id"])
+        entry = next(t for t in result["available_tasks"] if t["id"] == task["id"])
+        assert "is_yours" not in entry
 
     def test_session_context_unknown_project_raises(self):
         with pytest.raises(ValidationError) as exc:
