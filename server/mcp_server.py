@@ -511,20 +511,19 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "project_id": {
                         "type": "string",
-                        "description": "Focus project. Omit to auto-select one with active work.",
+                        "description": (
+                            "Project to load session context for. Omit only to list projects "
+                            "and choose one — full context is never returned without this."
+                        ),
                     },
                     "project_status": {
                         "type": "string",
                         "enum": ["active", "archived", "completed", "all"],
-                        "description": "Filter for project list (default: active)",
+                        "description": "Filter when listing projects without project_id (default: active)",
                     },
                     "include_snapshot": {
                         "type": "boolean",
-                        "description": "Include full project snapshot when focused (default: true)",
-                    },
-                    "auto_focus": {
-                        "type": "boolean",
-                        "description": "Auto-pick focus project when project_id omitted (default: true)",
+                        "description": "Include full project snapshot when project_id is set (default: true)",
                     },
                 },
             },
@@ -955,17 +954,21 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 project_id=arguments.get("project_id"),
                 project_status=arguments.get("project_status", "active"),
                 include_snapshot=arguments.get("include_snapshot", True),
-                auto_focus=arguments.get("auto_focus", True),
             )
             next_steps: list[str] = []
-            suggested = result.get("suggested_next_task")
-            focus_id = result.get("focus_project_id")
-            if suggested:
-                next_steps.append(f"task_begin_work task_id={suggested['id']}")
-            elif focus_id:
-                next_steps.append(f"task_create on project {focus_id} to add work items")
+            if result["mode"] == "select_project":
+                if result["projects"]:
+                    next_steps.append(
+                        "Pick the project you will work on, then call session_context with project_id"
+                    )
+                else:
+                    next_steps.append("project_create to start a new project")
             else:
-                next_steps.append("project_create to start a new project")
+                suggested = result.get("suggested_next_task")
+                if suggested:
+                    next_steps.append(f"task_begin_work task_id={suggested['id']}")
+                else:
+                    next_steps.append(f"task_create on project {result['project_id']} to add work items")
             return _ok(result, tool=name, next_steps=next_steps)
 
         elif name == "task_begin_work":

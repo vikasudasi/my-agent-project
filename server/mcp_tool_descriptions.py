@@ -108,14 +108,15 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Prefer task_begin_work, task_record_progress, and task_complete for the standard workflow."
     ),
     "session_context": (
-        "Primary session-start tool. Lists active projects, auto-selects a focus project, "
-        "returns snapshot, suggested next task, blocked tasks, and a session checklist. "
-        "Prefer over calling project_list + project_snapshot separately."
+        "Session-start tool scoped to one project. Without project_id: returns project list "
+        "so you can choose which project to work on. With project_id: returns snapshot, "
+        "suggested next task, blocked tasks, and checklist for that project only — never "
+        "auto-selects a project for you."
     ),
     "task_begin_work": (
         "Start working on a task in one call: returns spec, recent comments, checklist, and sets "
-        "status=in_progress if pending. Call after session_context picks a task. Read-only on "
-        "blocked/completed tasks."
+        "status=in_progress if pending. Call after session_context for your chosen project. "
+        "Read-only on blocked/completed tasks."
     ),
     "task_record_progress": (
         "Record session progress in one call: upserts progress doc and optionally adds a timeline "

@@ -8,9 +8,12 @@ Task Management System for AI Agents — use these MCP tools to plan, track, and
 - Pass api_key on every mutation, or set TM_API_KEY in the environment.
 
 ## Session start (read before write)
-Before creating or changing anything, prefer composite workflow tools:
-1. session_context — lists projects, optional snapshot, suggested next task (replaces project_list + project_snapshot ritual).
-2. task_begin_work — read spec + comments and set in_progress in one call.
+Before creating or changing anything:
+1. session_context (no project_id) — list projects and choose which one you will work on.
+2. session_context project_id=<id> — snapshot, suggested next task, and blockers for that project only.
+3. task_begin_work — read spec + comments and set in_progress for the task you chose.
+
+Do not rely on auto-selected projects — always pass the project_id you intend to work on.
 
 Granular alternatives when you need fine control:
 - project_list → project_snapshot → doc_task_get → comment_list

@@ -7,7 +7,6 @@ import pytest
 import db
 from mcp_validation import ValidationError
 from mcp_workflows import (
-    pick_focus_project,
     run_session_context,
     run_task_begin_work,
     run_task_complete,
@@ -25,6 +24,14 @@ def agent():
 
 
 class TestSessionContext:
+    def test_without_project_id_lists_for_selection(self, project):
+        result = run_session_context()
+        assert result["mode"] == "select_project"
+        assert "projects" in result
+        assert any(p["id"] == project["id"] for p in result["projects"])
+        assert "project_id" not in result
+        assert "snapshot" not in result
+
     def test_suggest_next_task_prefers_in_progress(self, project):
         t1 = db.create_task(project["id"], "Pending task")
         t2 = db.create_task(project["id"], "Active task")
@@ -37,16 +44,17 @@ class TestSessionContext:
     def test_session_context_with_project(self, project, task):
         db.update_task(task["id"], status="in_progress")
         result = run_session_context(project_id=project["id"])
-        assert result["focus_project_id"] == project["id"]
+        assert result["mode"] == "project_session"
+        assert result["project_id"] == project["id"]
         assert "snapshot" in result
         assert result["suggested_next_task"]["id"] == task["id"]
         assert result["session_checklist"]
 
-    def test_pick_focus_project_with_active_work(self, project):
-        t = db.create_task(project["id"], "Work")
-        db.update_task(t["id"], status="in_progress")
-        projects = db.list_projects(status="active")
-        assert pick_focus_project(projects) == project["id"]
+    def test_session_context_unknown_project_raises(self):
+        with pytest.raises(ValidationError) as exc:
+            run_session_context(project_id="nonexistent-project-id")
+        assert exc.value.code == "NOT_FOUND"
+        assert exc.value.field == "project_id"
 
 
 class TestTaskBeginWork:

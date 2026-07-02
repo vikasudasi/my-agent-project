@@ -11,7 +11,6 @@ from db import (
     get_task_subtask_stats,
     get_task_subtree,
     list_comments,
-    list_projects,
     log_audit,
     update_task,
     upsert_task_doc,
@@ -59,54 +58,57 @@ def suggest_next_task(project_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def pick_focus_project(projects: list[dict]) -> Optional[str]:
-    """Choose a project with active work, or the first active project."""
-    if not projects:
-        return None
-    for status_key in ("in_progress", "pending"):
-        for project in projects:
-            progress = get_project_progress(project["id"])
-            if progress and progress.get("by_status", {}).get(status_key, 0) > 0:
-                return project["id"]
-    return projects[0]["id"]
-
-
 def run_session_context(
     *,
     project_id: Optional[str] = None,
     project_status: str = "active",
     include_snapshot: bool = True,
-    auto_focus: bool = True,
 ) -> dict[str, Any]:
+    """Return project picker list, or full session context for a selected project."""
     status_filter = None if project_status == "all" else project_status
-    projects = list_projects_enriched(status=status_filter, include_progress=True)
 
-    focus_id = project_id
-    if not focus_id and auto_focus:
-        focus_id = pick_focus_project(projects)
+    if not project_id:
+        projects = list_projects_enriched(status=status_filter, include_progress=True)
+        checklist = [
+            "Choose the project you will work on this session",
+            "Call session_context again with that project_id",
+            "Then call task_begin_work on the task you intend to work on",
+        ]
+        if not projects:
+            checklist.insert(0, "No projects found — create one with project_create")
+        return {
+            "mode": "select_project",
+            "projects": projects,
+            "session_checklist": checklist,
+        }
+
+    project = enrich_project_dict(project_id)
+    if not project:
+        raise ValidationError(
+            f"Project '{project_id}' not found",
+            code="NOT_FOUND",
+            field="project_id",
+        )
 
     result: dict[str, Any] = {
-        "projects": projects,
-        "focus_project_id": focus_id,
+        "mode": "project_session",
+        "project_id": project_id,
+        "project": project,
         "session_checklist": list(SESSION_CHECKLIST),
     }
 
-    if focus_id:
-        result["focus_project"] = enrich_project_dict(focus_id)
-        if include_snapshot:
-            snapshot = build_project_snapshot(focus_id)
-            if snapshot:
-                result["snapshot"] = snapshot
-        suggested = suggest_next_task(focus_id)
-        if suggested:
-            result["suggested_next_task"] = suggested
-        blocked = _blocked_tasks_summary(focus_id)
-        if blocked:
-            result["blocked_tasks"] = blocked
-    else:
-        result["session_checklist"].insert(
-            0, "No active projects found — create one with project_create"
-        )
+    if include_snapshot:
+        snapshot = build_project_snapshot(project_id)
+        if snapshot:
+            result["snapshot"] = snapshot
+
+    suggested = suggest_next_task(project_id)
+    if suggested:
+        result["suggested_next_task"] = suggested
+
+    blocked = _blocked_tasks_summary(project_id)
+    if blocked:
+        result["blocked_tasks"] = blocked
 
     return result
 
