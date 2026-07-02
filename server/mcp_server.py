@@ -61,6 +61,7 @@ from mcp_enrich import (
     list_projects_enriched,
 )
 from mcp_instructions import MCP_INSTRUCTIONS
+from mcp_tool_descriptions import DOC_TYPE_PROP, STATUS_TASK_PROP, TOOL_DESCRIPTIONS
 from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
 from mcp_validation import (
     validate_project_create,
@@ -105,8 +106,12 @@ _DESC_PROP = {
 _REASON_PROP = {
     "type": "string",
     "minLength": 20,
-    "description": "Required when changing status. Explain why.",
+    "description": "Required when changing status or deleting. Explain why in plain language.",
 }
+
+
+def _tool(name: str) -> str:
+    return TOOL_DESCRIPTIONS[name]
 
 
 def _ok(data: Any, tool: Optional[str] = None) -> CallToolResult:
@@ -133,7 +138,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="project_create",
-            description="Create a new project. Description is required. Optionally provide initial_spec markdown.",
+            description=_tool("project_create"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -155,7 +160,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_list",
-            description="List projects with optional filters and progress stats.",
+            description=_tool("project_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -174,7 +179,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_get",
-            description="Get project details, progress, and docs summary.",
+            description=_tool("project_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -189,7 +194,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_snapshot",
-            description="Full project planning view: progress, docs summary, task tree, recent activity.",
+            description=_tool("project_snapshot"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -200,7 +205,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_update",
-            description="Update project fields. reason required when changing status.",
+            description=_tool("project_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -220,7 +225,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_archive",
-            description="Archive a project (soft delete). Preferred over project_delete.",
+            description=_tool("project_archive"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -233,7 +238,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_restore",
-            description="Restore an archived project to active status.",
+            description=_tool("project_restore"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -245,7 +250,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_delete",
-            description="Permanently delete a project and all data. Use project_archive instead when possible.",
+            description=_tool("project_delete"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -258,7 +263,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_create",
-            description="Create a task. Description required. Use initial_spec for root/non-trivial tasks.",
+            description=_tool("task_create"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -283,15 +288,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_list",
-            description="List tasks with optional filters. Includes subtask and doc flags by default.",
+            description=_tool("task_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                    },
+                    "status": STATUS_TASK_PROP,
                     "parent_id": {"type": "string", "description": "List children of this task"},
                     "include_enrichment": {
                         "type": "boolean",
@@ -303,7 +305,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_get",
-            description="Get task details with docs summary, subtask stats, created_by, and parent.",
+            description=_tool("task_get"),
             inputSchema={
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}},
@@ -312,7 +314,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_tree",
-            description="Get a task and its full recursive subtree of nested children.",
+            description=_tool("task_tree"),
             inputSchema={
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}},
@@ -321,7 +323,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_subtree",
-            description="Get the full hierarchical task tree for an entire project.",
+            description=_tool("task_subtree"),
             inputSchema={
                 "type": "object",
                 "properties": {"project_id": {"type": "string"}},
@@ -330,17 +332,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_update",
-            description="Update a task. blocker_reason required for blocked; closure_note or closure doc for completed.",
+            description=_tool("task_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "title": {"type": "string", "minLength": 3},
                     "description": _DESC_PROP,
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                    },
+                    "status": STATUS_TASK_PROP,
                     "blocker_reason": {
                         "type": "string",
                         "minLength": 20,
@@ -358,7 +357,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_move",
-            description="Move or reparent a task. Use after_task_id to reorder siblings.",
+            description=_tool("task_move"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -375,7 +374,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_delete",
-            description="Permanently delete a task and subtasks. Prefer status=cancelled when possible.",
+            description=_tool("task_delete"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -388,25 +387,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_project_get",
-            description="Get project markdown doc with metadata.",
+            description=_tool("doc_project_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="doc_project_update",
-            description="Update project markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
+            description=_tool("doc_project_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
                     "content": {"type": "string", "minLength": 50},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
                 "required": ["project_id", "content", "api_key"],
@@ -414,25 +413,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_task_get",
-            description="Get task markdown doc with metadata.",
+            description=_tool("doc_task_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                 },
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="doc_task_update",
-            description="Update task markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
+            description=_tool("doc_task_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "content": {"type": "string", "minLength": 50},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
                 "required": ["task_id", "content", "api_key"],
@@ -440,7 +439,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="comment_add",
-            description="Add a comment to a project or task.",
+            description=_tool("comment_add"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -459,7 +458,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="comment_list",
-            description="List comments for a project or task.",
+            description=_tool("comment_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -473,7 +472,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="agent_onboard",
-            description="Register a new agent. Returns API key once — save it immediately.",
+            description=_tool("agent_onboard"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -485,7 +484,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="agent_list",
-            description="List registered agents. Requires auth.",
+            description=_tool("agent_list"),
             inputSchema={
                 "type": "object",
                 "properties": {"api_key": _API_KEY_PROP},
@@ -494,7 +493,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="audit_log_get",
-            description="Get audit log entries. scope=project_with_tasks returns all project+task activity.",
+            description=_tool("audit_log_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
