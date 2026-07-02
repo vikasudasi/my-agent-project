@@ -3,6 +3,8 @@
 MCP_INSTRUCTIONS = """
 Task Management System for AI Agents — use these MCP tools to plan, track, and document work.
 
+Pin read-only resources for stable context: taskmgr://reference/playbook and taskmgr://templates/* (spec, progress, closure).
+
 ## Authentication
 - Register once with agent_onboard (returns api_key — save it immediately).
 - Pass api_key on every mutation, or set TM_API_KEY in the environment.
