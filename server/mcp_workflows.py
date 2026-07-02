@@ -18,8 +18,15 @@ from db import (
 )
 from mcp_enrich import build_project_snapshot, enrich_task, list_projects_enriched
 from mcp_read_hints import build_blocked_tasks_summary
-from mcp_validation import ValidationError, require_text, validate_comment_content, validate_doc_content
-from mcp_validation import MIN_REASON_LEN
+from mcp_validation import (
+    ValidationError,
+    require_text,
+    validate_comment_content,
+    validate_doc_content,
+    validate_subtasks_allow_parent_complete,
+    validate_task_has_spec,
+    MIN_REASON_LEN,
+)
 
 SESSION_CHECKLIST = [
     "Review spec and recent comments before changing code",
@@ -203,15 +210,14 @@ def run_task_begin_work(
             field="task_id",
         )
 
+    spec_meta = get_task_doc_meta(task_id, "spec")
+    validate_task_has_spec(task_id, spec_meta is not None)
+
     if status == "pending":
         updated = update_task(task_id, status="in_progress")
         if updated:
             task = updated
             log_audit(agent_name, master_name, "task", task_id, "status_changed", "status", "pending", "in_progress")
-
-    spec_meta = get_task_doc_meta(task_id, "spec")
-    if not spec_meta:
-        warnings.append("No spec doc — define scope with doc_task_update doc_type=spec before implementing.")
 
     comments = list_comments("task", task_id, limit=comment_limit, since=comment_since)
     enriched = enrich_task(task)
@@ -294,14 +300,7 @@ def run_task_complete(
     if task.get("status") == "completed":
         raise ValidationError("Task is already completed", code="INVALID_STATUS", field="task_id")
 
-    warnings: list[str] = []
-    stats = get_task_subtask_stats(task_id)
-    total = stats.get("subtask_count", 0)
-    done = stats.get("subtasks_completed", 0)
-    if total > done:
-        warnings.append(
-            f"{total - done} of {total} subtasks are not completed — parent may be closing early."
-        )
+    validate_subtasks_allow_parent_complete(task_id)
 
     if closure:
         closure_content = validate_doc_content(closure, "closure")
@@ -342,8 +341,6 @@ def run_task_complete(
         "task": enriched,
         "closure_written": True,
     }
-    if warnings:
-        payload["warnings"] = warnings
     if next_steps:
         payload["next_steps"] = next_steps
     return payload

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import db
+from conftest import VALID_SPEC
 from mcp_enrich import enrich_task, build_project_snapshot
 from mcp_read_hints import (
     build_blocked_tasks_summary,
@@ -57,6 +58,7 @@ class TestTaskGetReadEnrichment:
 
     def test_is_yours_with_agent(self, project, agent):
         t = db.create_task(project["id"], "Mine", "A" * 40)
+        db.upsert_task_doc(t["id"], VALID_SPEC, "spec")
         run_task_begin_work(t["id"], agent_name=agent["name"], master_name=agent["master_name"])
         enriched = enrich_task(t, for_read=True, agent_name=agent["name"])
         assert enriched["is_yours"] is True
@@ -74,7 +76,8 @@ class TestProjectSnapshotRead:
 
 
 class TestReadHints:
-    def test_task_get_warns_missing_spec(self, task):
+    def test_task_get_warns_missing_spec(self, project):
+        task = db.create_task(project["id"], "No spec task", "A" * 40)
         warnings, next_steps = build_read_hints(
             "task_get",
             {"id": task["id"], "status": "pending", "docs_summary": db.get_docs_summary("task", task["id"])},
@@ -104,6 +107,7 @@ class TestReadHints:
 
     def test_task_list_suggests_yours(self, project, agent):
         t = db.create_task(project["id"], "Yours", "A" * 40)
+        db.upsert_task_doc(t["id"], VALID_SPEC, "spec")
         run_task_begin_work(t["id"], agent_name=agent["name"], master_name=agent["master_name"])
         from mcp_enrich import enrich_task_list
         tasks = enrich_task_list([t], for_read=True, agent_name=agent["name"])

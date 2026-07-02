@@ -536,14 +536,20 @@ def count_comments(entity_type: str, entity_id: str) -> int:
 
 def get_task_subtask_stats(task_id: str) -> dict:
     with get_connection() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE parent_id = ?", (task_id,)
-        ).fetchone()[0]
-        completed = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE parent_id = ? AND status = 'completed'",
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE parent_id = ? GROUP BY status",
             (task_id,),
-        ).fetchone()[0]
-    return {"subtask_count": total, "subtasks_completed": completed}
+        ).fetchall()
+    by_status = {r["status"]: r["cnt"] for r in rows}
+    total = sum(by_status.values())
+    completed = by_status.get("completed", 0)
+    terminal = sum(by_status.get(s, 0) for s in ("completed", "cancelled", "failed"))
+    return {
+        "subtask_count": total,
+        "subtasks_completed": completed,
+        "subtasks_terminal": terminal,
+        "subtasks_active": total - terminal,
+    }
 
 
 def get_docs_summary(entity_type: str, entity_id: str) -> dict:

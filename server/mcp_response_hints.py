@@ -11,7 +11,6 @@ def build_hints(
     *,
     arguments: Optional[dict[str, Any]] = None,
     old: Optional[dict[str, Any]] = None,
-    had_initial_spec: bool = False,
     wrote_closure_note: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Return (warnings, next_steps) for a mutation tool response."""
@@ -20,7 +19,7 @@ def build_hints(
     next_steps: list[str] = []
 
     if tool == "project_create":
-        _hints_project_create(data, had_initial_spec, warnings, next_steps)
+        _hints_project_create(data, next_steps)
     elif tool == "project_update":
         _hints_project_update(data, old, arguments, warnings, next_steps)
     elif tool == "project_archive":
@@ -29,7 +28,7 @@ def build_hints(
         pid = data.get("id") or arguments.get("project_id")
         next_steps.append(f"Call project_snapshot on {pid} to review task tree and pick up work")
     elif tool == "task_create":
-        _hints_task_create(data, had_initial_spec, warnings, next_steps)
+        _hints_task_create(data, next_steps)
     elif tool == "task_update":
         _hints_task_update(data, old, arguments, wrote_closure_note, warnings, next_steps)
     elif tool == "task_move":
@@ -57,19 +56,11 @@ def build_hints(
 
 def _hints_project_create(
     data: dict[str, Any],
-    had_initial_spec: bool,
-    warnings: list[str],
     next_steps: list[str],
 ) -> None:
     pid = data.get("id")
-    docs = data.get("docs_summary") or get_docs_summary("project", pid)
-    if not had_initial_spec and not docs.get("spec", {}).get("exists"):
-        warnings.append(
-            "No initial_spec provided — project plan exists only in the description field."
-        )
-        next_steps.append(f"doc_project_update project_id={pid} doc_type=spec with ## Objective and ## Acceptance Criteria")
     next_steps.extend([
-        "Create root tasks with task_create (include description and initial_spec)",
+        "Create root tasks with task_create (description and initial_spec required)",
         f"Call project_snapshot on {pid} after adding tasks to review structure",
     ])
 
@@ -106,28 +97,15 @@ def _hints_project_update(
 
 def _hints_task_create(
     data: dict[str, Any],
-    had_initial_spec: bool,
-    warnings: list[str],
     next_steps: list[str],
 ) -> None:
     tid = data.get("id")
     is_root = not data.get("parent_id")
-    docs = data.get("docs_summary") or get_docs_summary("task", tid)
-
-    if is_root and not had_initial_spec and not docs.get("spec", {}).get("exists"):
-        warnings.append(
-            "Root task created without initial_spec — add a spec before starting implementation."
-        )
-        next_steps.append(f"doc_task_update task_id={tid} doc_type=spec with ## Objective and ## Acceptance Criteria")
 
     if not is_root:
         next_steps.append("When done, check parent subtask_stats via task_get before marking parent complete")
 
-    next_steps.extend([
-        f"doc_task_get task_id={tid} doc_type=spec before starting work",
-        f"task_update task_id={tid} status=in_progress when you begin",
-    ])
-
+    next_steps.append(f"task_begin_work task_id={tid} when you start implementation")
     if is_root:
         next_steps.append(f"Decompose with task_create parent_id={tid} if work spans multiple steps")
 
@@ -149,9 +127,6 @@ def _hints_task_update(
     docs = data.get("docs_summary") or get_docs_summary("task", tid)
 
     if new_status == "in_progress":
-        if not docs.get("spec", {}).get("exists"):
-            warnings.append("Task is in_progress but has no spec doc — define scope before implementing.")
-            next_steps.append(f"doc_task_update task_id={tid} doc_type=spec")
         next_steps.append(f"doc_task_update task_id={tid} doc_type=progress as you make findings")
 
     elif new_status == "blocked":
@@ -169,11 +144,10 @@ def _hints_task_update(
             )
 
         stats = data.get("subtask_stats") or get_task_subtask_stats(tid)
-        total = stats.get("subtask_count", 0)
-        done = stats.get("subtasks_completed", 0)
-        if total > done:
+        active = stats.get("subtasks_active", 0)
+        if active > 0:
             warnings.append(
-                f"Task marked completed but {total - done} of {total} subtasks are not completed."
+                f"Task marked completed but {active} subtask(s) are still active."
             )
 
         parent_id = data.get("parent_id") or (old.get("parent_id") if old else None)

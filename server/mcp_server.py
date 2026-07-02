@@ -118,6 +118,12 @@ _REASON_PROP = {
     "description": "Required when changing status or deleting. Explain why in plain language.",
 }
 
+_INITIAL_SPEC_PROP = {
+    "type": "string",
+    "minLength": 80,
+    "description": "Required. Markdown with ## Objective and ## Acceptance Criteria.",
+}
+
 
 def _tool(name: str) -> str:
     return TOOL_DESCRIPTIONS[name]
@@ -148,7 +154,6 @@ def _ok_mutation(
     *,
     arguments: Optional[dict] = None,
     old: Optional[dict] = None,
-    had_initial_spec: bool = False,
     wrote_closure_note: bool = False,
 ) -> CallToolResult:
     warnings, next_steps = build_hints(
@@ -156,7 +161,6 @@ def _ok_mutation(
         data if isinstance(data, dict) else {},
         arguments=arguments,
         old=old,
-        had_initial_spec=had_initial_spec,
         wrote_closure_note=wrote_closure_note,
     )
     return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
@@ -185,10 +189,17 @@ def _ok_read(
     return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
 
 
-def _err(msg: str, code: str = "ERROR", field: Optional[str] = None) -> CallToolResult:
+def _err(
+    msg: str,
+    code: str = "ERROR",
+    field: Optional[str] = None,
+    remediation: Optional[list[str]] = None,
+) -> CallToolResult:
     error: dict[str, Any] = {"code": code, "message": msg}
     if field:
         error["field"] = field
+    if remediation:
+        error["remediation"] = remediation
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps({"ok": False, "error": error}))],
         isError=True,
@@ -210,14 +221,10 @@ async def list_tools() -> list[Tool]:
                         "description": "Short unique project name",
                     },
                     "description": _DESC_PROP,
-                    "initial_spec": {
-                        "type": "string",
-                        "minLength": 80,
-                        "description": "Recommended. Markdown with ## Objective and ## Acceptance Criteria",
-                    },
+                    "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["name", "description", "api_key"],
+                "required": ["name", "description", "initial_spec", "api_key"],
             },
         ),
         Tool(
@@ -340,14 +347,10 @@ async def list_tools() -> list[Tool]:
                     "description": _DESC_PROP,
                     "parent_id": {"type": "string", "description": "Parent task ID for subtasks"},
                     "after_task_id": {"type": "string", "description": "Insert after this sibling"},
-                    "initial_spec": {
-                        "type": "string",
-                        "minLength": 80,
-                        "description": "Markdown spec with ## Objective and ## Acceptance Criteria",
-                    },
+                    "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "title", "description", "api_key"],
+                "required": ["project_id", "title", "description", "initial_spec", "api_key"],
             },
         ),
         Tool(
@@ -412,6 +415,11 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "minLength": 20,
                         "description": "Required when status=blocked",
+                    },
+                    "failure_reason": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Required when status=failed",
                     },
                     "closure_note": {
                         "type": "string",
@@ -706,16 +714,10 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         if name == "project_create":
             validated = validate_project_create(arguments)
             result = create_project(validated["name"], validated["description"])
-            if validated.get("initial_spec"):
-                upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
+            upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
             enriched = enrich_project(result)
-            return _ok_mutation(
-                enriched,
-                name,
-                arguments=arguments,
-                had_initial_spec=bool(validated.get("initial_spec")),
-            )
+            return _ok_mutation(enriched, name, arguments=arguments)
 
         elif name == "project_list":
             status = arguments.get("status", "active")
@@ -827,20 +829,14 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            if validated.get("initial_spec"):
-                upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
+            upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
             enriched = enrich_task(result)
             enriched["created_by"] = {
                 "agent_name": agent["name"],
                 "master_name": agent["master_name"],
             }
-            return _ok_mutation(
-                enriched,
-                name,
-                arguments=arguments,
-                had_initial_spec=bool(validated.get("initial_spec")),
-            )
+            return _ok_mutation(enriched, name, arguments=arguments)
 
         elif name == "task_list":
             agent_name, auth_err = _optional_agent_name(arguments)
@@ -881,18 +877,27 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             old = get_task(arguments["task_id"])
             if not old:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
-            has_closure = get_task_doc_meta(arguments["task_id"], "closure") is not None
-            extras = validate_task_update(arguments, old, has_closure)
+            tid = arguments["task_id"]
+            has_closure = get_task_doc_meta(tid, "closure") is not None
+            has_spec = get_task_doc_meta(tid, "spec") is not None
+            extras = validate_task_update(
+                arguments, old, has_closure, has_spec_doc=has_spec
+            )
             new_status = arguments.get("status")
             if new_status == "blocked" and extras.get("blocker_reason"):
                 add_comment(
-                    "task", arguments["task_id"],
+                    "task", tid,
                     f"[blocker] {extras['blocker_reason']}", author=agent["name"],
                 )
+            if new_status == "failed" and extras.get("failure_reason"):
+                add_comment(
+                    "task", tid,
+                    f"[failed] {extras['failure_reason']}", author=agent["name"],
+                )
             if new_status == "completed" and extras.get("closure_note"):
-                upsert_task_doc(arguments["task_id"], f"## Summary\n{extras['closure_note']}", doc_type="closure")
+                upsert_task_doc(tid, f"## Summary\n{extras['closure_note']}", doc_type="closure")
             result = update_task(
-                arguments["task_id"],
+                tid,
                 title=arguments.get("title"),
                 description=arguments.get("description"),
                 status=new_status,
@@ -903,7 +908,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 if old_val != new_val:
                     action = "status_changed" if field == "status" else "updated"
                     log_audit(agent["name"], agent["master_name"], "task",
-                              arguments["task_id"], action, field,
+                              tid, action, field,
                               str(old_val) if old_val else None,
                               str(new_val) if new_val else None)
             return _ok_mutation(
@@ -913,7 +918,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 old=old,
                 wrote_closure_note=bool(extras.get("closure_note")),
             )
-            after = arguments.get("after_task_id")
+
+        elif name == "task_move":
             parent = arguments.get("parent_id")
             if parent == "":
                 parent = None
@@ -1131,7 +1137,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _err(f"Unknown tool: {name}", code="UNKNOWN_TOOL")
 
     except ValidationError as e:
-        return _err(e.message, code=e.code, field=e.field)
+        return _err(e.message, code=e.code, field=e.field, remediation=e.remediation or None)
     except Exception as e:
         return _err(f"Error executing {name}: {str(e)}", code="INTERNAL_ERROR")
 

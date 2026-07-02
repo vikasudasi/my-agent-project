@@ -44,8 +44,9 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Requires reason. Restorable via project_restore."
     ),
     "project_create": (
-        "Start a new project. Provide a meaningful description (40+ chars) and initial_spec when "
-        "possible. Next: create root tasks with task_create, then decompose with parent_id subtasks."
+        "Start a new project. Provide a meaningful description (40+ chars) and required "
+        "initial_spec (## Objective, ## Acceptance Criteria). Next: create root tasks with "
+        "task_create, then decompose with parent_id subtasks."
     ),
     "project_delete": (
         "Permanently delete a project and all tasks, docs, and comments. Last resort — prefer "
@@ -65,8 +66,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "to review task tree and pick up where you left off."
     ),
     "project_snapshot": (
-        "Full project view: progress, docs summary, task tree, recent activity, and blocked_tasks "
-        "with blocker comments. Returns read hints. Optional api_key for agent context."
+        "Full project view for session-start: progress, docs summary, task tree, recent activity, "
+        "and blocked_tasks with blocker comments. Returns read hints. Optional api_key for agent context."
     ),
     "project_update": (
         "Update project name, description, or status. reason required when changing status "
@@ -74,8 +75,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "task_create": (
         "Add a task or subtask. Decompose large work with parent_id instead of flat lists. "
-        "Root and non-trivial tasks should include initial_spec. Use after_task_id to order "
-        "siblings. Next: set in_progress when starting, or create child subtasks."
+        "initial_spec is required for all tasks including subtasks. Use after_task_id to order "
+        "siblings. Next: task_begin_work when starting, or create child subtasks."
     ),
     "task_delete": (
         "Permanently delete a task and its subtasks. Prefer task_update status=cancelled when "
@@ -104,10 +105,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "completing a parent task."
     ),
     "task_update": (
-        "Change task fields or lifecycle status. Starting work: status=in_progress (after reading "
-        "spec). Blocked: status=blocked + blocker_reason. Done: write closure doc first, then "
-        "status=completed (or closure_note if no doc yet). No longer needed: status=cancelled. "
-        "Prefer task_begin_work, task_record_progress, and task_complete for the standard workflow."
+        "Change task fields or lifecycle status. Starting work: status=in_progress (requires spec). "
+        "Blocked: status=blocked + blocker_reason. Failed: status=failed + failure_reason. "
+        "Done: closure doc or closure_note, then status=completed (blocked if active subtasks remain). "
+        "No longer needed: status=cancelled. Prefer task_begin_work, task_record_progress, "
+        "and task_complete for the standard workflow."
     ),
     "session_context": (
         "Session-start tool scoped to one project. Without project_id: returns project list. "
@@ -117,8 +119,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "task_begin_work": (
         "Start working on a task in one call: returns spec, recent comments, checklist, and sets "
-        "status=in_progress if pending. Call after session_context for your chosen project. "
-        "Read-only on blocked/completed tasks."
+        "status=in_progress if pending. Requires a spec doc — fails if missing. Call after "
+        "session_context for your chosen project. Read-only on blocked/completed tasks."
     ),
     "task_record_progress": (
         "Record session progress in one call: upserts progress doc and optionally adds a timeline "
@@ -126,7 +128,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "task_complete": (
         "Finish a task in one call: writes closure doc (closure markdown or closure_note) and marks "
-        "completed. Warns on incomplete subtasks. Prefer over doc_task_update + task_update."
+        "completed. Blocks if active subtasks remain. Prefer over doc_task_update + task_update."
     ),
 }
 

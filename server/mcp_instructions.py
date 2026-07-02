@@ -21,9 +21,9 @@ Granular alternatives when you need fine control:
 - project_list → project_snapshot → doc_task_get → comment_list
 
 ## Planning and task structure
-- Create projects with project_create: meaningful description (40+ chars) and initial_spec when possible.
+- Create projects with project_create: meaningful description (40+ chars) and required initial_spec (## Objective, ## Acceptance Criteria).
 - Decompose work with task_create: use parent_id for subtasks; use after_task_id for ordering.
-- Root and non-trivial tasks should include initial_spec with ## Objective and ## Acceptance Criteria.
+- initial_spec is required for every task including subtasks — define scope before work begins.
 - Prefer a task tree over one flat list — humans and future agents navigate hierarchies better.
 
 ## While working
@@ -56,8 +56,10 @@ If this was a subtask, check parent subtask_stats before marking the parent comp
 
 ## Status values
 pending → in_progress → completed | blocked | failed | cancelled
+- in_progress: requires a spec doc (enforced — use task_begin_work or add spec first).
 - blocked: always explain why (blocker_reason).
-- failed: note what was attempted and why it did not work (comment_add).
+- failed: requires failure_reason.
+- completed: requires closure doc or closure_note; parent tasks cannot complete while subtasks are active.
 - cancelled: prefer over task_delete when work is no longer needed.
 
 ## Destructive actions

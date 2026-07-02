@@ -1,45 +1,32 @@
 """Tests for MCP mutation response hints."""
 
 import db
+from conftest import VALID_SPEC
 from mcp_response_hints import build_hints
 
 
 class TestProjectCreateHints:
-    def test_project_create_without_spec(self):
+    def test_project_create_suggests_tasks(self):
         project = db.create_project("Hint Project", "A" * 40)
         try:
             enriched = {**project, "docs_summary": db.get_docs_summary("project", project["id"])}
-            warnings, next_steps = build_hints(
-                "project_create", enriched, had_initial_spec=False
-            )
-            assert any("initial_spec" in w for w in warnings)
-            assert any("task_create" in s for s in next_steps)
-            assert any("doc_project_update" in s for s in next_steps)
-        finally:
-            db.delete_project(project["id"])
-
-    def test_project_create_with_spec(self):
-        project = db.create_project("Hint Project 2", "A" * 40)
-        try:
-            enriched = {**project, "docs_summary": db.get_docs_summary("project", project["id"])}
-            warnings, next_steps = build_hints(
-                "project_create", enriched, had_initial_spec=True
-            )
+            warnings, next_steps = build_hints("project_create", enriched)
             assert not warnings
             assert any("task_create" in s for s in next_steps)
+            assert any("project_snapshot" in s for s in next_steps)
         finally:
             db.delete_project(project["id"])
 
 
 class TestTaskUpdateHints:
-    def test_in_progress_without_spec_warns(self, task):
+    def test_in_progress_suggests_progress_doc(self, task):
         warnings, next_steps = build_hints(
             "task_update",
             {**task, "status": "in_progress", "docs_summary": db.get_docs_summary("task", task["id"])},
             old={**task, "status": "pending"},
             arguments={"task_id": task["id"], "status": "in_progress"},
         )
-        assert any("no spec" in w.lower() for w in warnings)
+        assert not warnings
         assert any("progress" in s for s in next_steps)
 
     def test_completed_without_closure_warns(self, task):
@@ -59,6 +46,7 @@ class TestTaskUpdateHints:
         assert any("doc_task_update" in s for s in next_steps)
 
     def test_completed_subtask_suggests_parent_check(self, subtask):
+        db.upsert_task_doc(subtask["id"], VALID_SPEC, "spec")
         db.update_task(subtask["id"], status="in_progress")
         parent = db.get_task(subtask["parent_id"])
         warnings, next_steps = build_hints(

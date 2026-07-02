@@ -5,6 +5,7 @@ import time
 import pytest
 
 import db
+from conftest import VALID_SPEC
 from mcp_validation import ValidationError
 from mcp_workflows import (
     list_available_tasks,
@@ -77,7 +78,9 @@ class TestSessionContext:
 
     def test_is_yours_on_available_tasks_with_api_key(self, project, agent):
         task = db.create_task(project["id"], "Agent task", "A" * 40)
+        db.upsert_task_doc(task["id"], VALID_SPEC, "spec")
         other = db.create_task(project["id"], "Other task", "B" * 40)
+        db.upsert_task_doc(other["id"], VALID_SPEC, "spec")
         run_task_begin_work(
             task["id"],
             agent_name=agent["name"],
@@ -104,6 +107,7 @@ class TestSessionContext:
 class TestTaskBeginWork:
     def test_sets_pending_to_in_progress(self, project, agent):
         task = db.create_task(project["id"], "Begin me", "A" * 40)
+        db.upsert_task_doc(task["id"], VALID_SPEC, "spec")
         result = run_task_begin_work(
             task["id"],
             agent_name=agent["name"],
@@ -111,8 +115,19 @@ class TestTaskBeginWork:
         )
         assert result["task"]["status"] == "in_progress"
         assert "checklist" in result
-        assert result["spec"]["exists"] is False
-        assert result["warnings"]
+        assert result["spec"]["exists"] is True
+        assert not result["warnings"]
+
+    def test_rejects_task_without_spec(self, project, agent):
+        task = db.create_task(project["id"], "No spec", "A" * 40)
+        with pytest.raises(ValidationError) as exc:
+            run_task_begin_work(
+                task["id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+            )
+        assert exc.value.code == "TRANSITION_BLOCKED"
+        assert exc.value.remediation
 
     def test_rejects_completed_task(self, project, agent, task):
         db.update_task(task["id"], status="completed")
@@ -145,6 +160,7 @@ class TestTaskRecordProgress:
 
 class TestTaskComplete:
     def test_completes_with_closure_note(self, project, agent, task):
+        db.upsert_task_doc(task["id"], VALID_SPEC, "spec")
         db.update_task(task["id"], status="in_progress")
         result = run_task_complete(
             task["id"],
@@ -158,12 +174,16 @@ class TestTaskComplete:
         assert closure is not None
         assert "## Summary" in closure["content"]
 
-    def test_warns_on_incomplete_subtasks(self, project, agent, task, subtask):
+    def test_blocks_parent_with_active_subtasks(self, project, agent, task, subtask):
+        db.upsert_task_doc(task["id"], VALID_SPEC, "spec")
+        db.upsert_task_doc(subtask["id"], VALID_SPEC, "spec")
         db.update_task(task["id"], status="in_progress")
-        result = run_task_complete(
-            task["id"],
-            agent_name=agent["name"],
-            master_name=agent["master_name"],
-            closure_note="Closed parent even though child still open here",
-        )
-        assert any("subtasks" in w for w in result.get("warnings", []))
+        with pytest.raises(ValidationError) as exc:
+            run_task_complete(
+                task["id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                closure_note="Closed parent even though child still open here",
+            )
+        assert exc.value.code == "TRANSITION_BLOCKED"
+        assert exc.value.remediation
