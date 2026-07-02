@@ -61,6 +61,7 @@ from mcp_enrich import (
     list_projects_enriched,
 )
 from mcp_instructions import MCP_INSTRUCTIONS
+from mcp_response_hints import build_hints
 from mcp_tool_descriptions import DOC_TYPE_PROP, STATUS_TASK_PROP, TOOL_DESCRIPTIONS
 from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
 from mcp_validation import (
@@ -114,13 +115,43 @@ def _tool(name: str) -> str:
     return TOOL_DESCRIPTIONS[name]
 
 
-def _ok(data: Any, tool: Optional[str] = None) -> CallToolResult:
+def _ok(
+    data: Any,
+    tool: Optional[str] = None,
+    *,
+    warnings: Optional[list[str]] = None,
+    next_steps: Optional[list[str]] = None,
+) -> CallToolResult:
     body: dict[str, Any] = {"ok": True, "data": data}
+    if warnings:
+        body["warnings"] = warnings
+    if next_steps:
+        body["next_steps"] = next_steps
     if tool:
         body["meta"] = {"tool": tool}
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(body, indent=2, default=str))]
     )
+
+
+def _ok_mutation(
+    data: Any,
+    tool: str,
+    *,
+    arguments: Optional[dict] = None,
+    old: Optional[dict] = None,
+    had_initial_spec: bool = False,
+    wrote_closure_note: bool = False,
+) -> CallToolResult:
+    warnings, next_steps = build_hints(
+        tool,
+        data if isinstance(data, dict) else {},
+        arguments=arguments,
+        old=old,
+        had_initial_spec=had_initial_spec,
+        wrote_closure_note=wrote_closure_note,
+    )
+    return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
 
 
 def _err(msg: str, code: str = "ERROR", field: Optional[str] = None) -> CallToolResult:
@@ -535,11 +566,12 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
             enriched = enrich_project(result)
-            enriched["next_steps"] = [
-                "Create root tasks with task_create (include description and initial_spec)",
-                "Write project spec via doc_project_update if initial_spec was omitted",
-            ]
-            return _ok(enriched, tool=name)
+            return _ok_mutation(
+                enriched,
+                name,
+                arguments=arguments,
+                had_initial_spec=bool(validated.get("initial_spec")),
+            )
 
         elif name == "project_list":
             status = arguments.get("status", "active")
@@ -591,7 +623,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                               arguments["project_id"], "updated", field,
                               str(old_val) if old_val else None,
                               str(new_val) if new_val else None)
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(
+                enrich_project(result), name, arguments=arguments, old=old
+            )
 
         elif name == "project_archive":
             reason = require_text(
@@ -604,7 +638,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("project", arguments["project_id"], f"[archived] {reason}", author=agent["name"])
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "updated", "status", old["status"], "archived")
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_restore":
             old = get_project(arguments["project_id"])
@@ -613,7 +647,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             result = update_project(arguments["project_id"], status="active")
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "updated", "status", old["status"], "active")
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_delete":
             reason = require_text(
@@ -625,9 +659,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("project", pid, f"[deleted] {reason}", author=agent["name"])
             delete_project(pid)
             log_audit(agent["name"], agent["master_name"], "project", pid, "deleted")
-            return _ok({"deleted": True, "project_id": pid}, tool=name)
-
-        # ---- Tasks ----
+            return _ok(
+                {"deleted": True, "project_id": pid},
+                tool=name,
+                warnings=["Project and all tasks, docs, and comments were permanently deleted."],
+            )
         elif name == "task_create":
             validated = validate_task_create(arguments)
             result = create_task(
@@ -647,7 +683,12 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 "agent_name": agent["name"],
                 "master_name": agent["master_name"],
             }
-            return _ok(enriched, tool=name)
+            return _ok_mutation(
+                enriched,
+                name,
+                arguments=arguments,
+                had_initial_spec=bool(validated.get("initial_spec")),
+            )
 
         elif name == "task_list":
             result = list_tasks(
@@ -704,9 +745,13 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                               arguments["task_id"], action, field,
                               str(old_val) if old_val else None,
                               str(new_val) if new_val else None)
-            return _ok(enrich_task(result), tool=name)
-
-        elif name == "task_move":
+            return _ok_mutation(
+                enrich_task(result),
+                name,
+                arguments=arguments,
+                old=old,
+                wrote_closure_note=bool(extras.get("closure_note")),
+            )
             after = arguments.get("after_task_id")
             parent = arguments.get("parent_id")
             if parent == "":
@@ -719,7 +764,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 log_audit(agent["name"], agent["master_name"], "task",
                           arguments["task_id"], "moved", "parent_id",
                           old.get("parent_id"), result.get("parent_id"))
-            return _ok(enrich_task(result), tool=name)
+            return _ok_mutation(enrich_task(result), name, arguments=arguments)
 
         elif name == "task_delete":
             reason = validate_task_delete(arguments)
@@ -729,9 +774,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("task", tid, f"[deleted] {reason}", author=agent["name"])
             delete_task(tid)
             log_audit(agent["name"], agent["master_name"], "task", tid, "deleted")
-            return _ok({"deleted": True, "task_id": tid}, tool=name)
-
-        # ---- Documentation ----
+            return _ok(
+                {"deleted": True, "task_id": tid},
+                tool=name,
+                warnings=["Task and its subtasks were permanently deleted."],
+            )
         elif name == "doc_project_get":
             doc_type = arguments.get("doc_type", "spec")
             meta = get_project_doc_meta(arguments["project_id"], doc_type=doc_type)
@@ -748,14 +795,14 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "doc_updated", f"doc_{doc_type}")
             meta = get_project_doc_meta(arguments["project_id"], doc_type)
-            return _ok({
+            doc_payload = {
                 "updated": True,
+                "project_id": arguments["project_id"],
                 "doc_type": doc_type,
                 "updated_at": meta["updated_at"] if meta else None,
                 "char_count": len(content),
-            }, tool=name)
-
-        elif name == "doc_task_get":
+            }
+            return _ok_mutation(doc_payload, name, arguments=arguments)
             doc_type = arguments.get("doc_type", "spec")
             if not get_task(arguments["task_id"]):
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
@@ -771,14 +818,14 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             log_audit(agent["name"], agent["master_name"], "task",
                       arguments["task_id"], "doc_updated", f"doc_{doc_type}")
             meta = get_task_doc_meta(arguments["task_id"], doc_type)
-            return _ok({
+            doc_payload = {
                 "updated": True,
+                "task_id": arguments["task_id"],
                 "doc_type": doc_type,
                 "updated_at": meta["updated_at"] if meta else None,
                 "char_count": len(content),
-            }, tool=name)
-
-        # ---- Comments ----
+            }
+            return _ok_mutation(doc_payload, name, arguments=arguments)
         elif name == "comment_add":
             content = validate_comment_content(arguments["content"])
             comment_type = arguments.get("comment_type")
@@ -793,7 +840,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
             log_audit(agent["name"], agent["master_name"],
                       arguments["entity_type"], arguments["entity_id"], "comment_added")
-            return _ok(result, tool=name)
+            return _ok_mutation(result, name, arguments=arguments)
 
         elif name == "comment_list":
             result = list_comments(
@@ -809,13 +856,16 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             result = onboard_agent(arguments["name"], arguments["master_name"])
             if not result:
                 return _err(f"Agent '{arguments['name']}' already exists.", code="CONFLICT")
-            return _ok({
-                "agent_id": result["id"],
-                "agent_name": result["name"],
-                "master_name": result["master_name"],
-                "api_key": result["api_key"],
-                "created_at": result["created_at"],
-            }, tool=name)
+            return _ok_mutation(
+                {
+                    "agent_id": result["id"],
+                    "agent_name": result["name"],
+                    "master_name": result["master_name"],
+                    "api_key": result["api_key"],
+                    "created_at": result["created_at"],
+                },
+                name,
+            )
 
         elif name == "agent_list":
             return _ok(list_agents(), tool=name)
