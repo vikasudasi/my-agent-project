@@ -10,12 +10,12 @@ Task Management System for AI Agents — use these MCP tools to plan, track, and
 ## Session start (read before write)
 Before creating or changing anything:
 1. session_context (no project_id) — list projects and choose which one you will work on.
-2. session_context project_id=<id> — all workable tasks in that project (multiple agents may share a project).
-3. session_context project_id=<id> task_id=<id> — focus on YOUR task (spec, comments, project snapshot).
+2. session_context project_id=<id> — all workable tasks with descriptions and is_yours (with api_key).
+3. session_context project_id=<id> task_id=<id> — focus on YOUR task.
 4. task_begin_work task_id=<id> — set in_progress and start implementation.
 
-In shared projects, always pass task_id for the task you own. Pass api_key to get
-is_yours on each available_tasks entry for tasks you previously started.
+Read tools (task_get, project_snapshot, task_list) also return warnings, next_steps, and inline
+context — no need to chain comment_list after task_get.
 
 Granular alternatives when you need fine control:
 - project_list → project_snapshot → doc_task_get → comment_list

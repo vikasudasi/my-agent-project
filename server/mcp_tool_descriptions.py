@@ -53,7 +53,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "project_get": (
         "Get one project's metadata, progress stats, and docs_summary. Lighter than project_snapshot; "
-        "use when you only need counts and doc flags, not the full task tree."
+        "use when you only need counts and doc flags. Returns read hints (warnings/next_steps) and "
+        "flags blocked work."
     ),
     "project_list": (
         "First call at session start. Lists projects with optional progress stats. Use to find "
@@ -64,9 +65,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "to review task tree and pick up where you left off."
     ),
     "project_snapshot": (
-        "Primary session-start view for a project: progress, docs summary, full task tree, and "
-        "recent activity. Prefer this over multiple task_list/task_get calls. Pick your next "
-        "pending or in_progress task from the tree, then doc_task_get its spec."
+        "Full project view: progress, docs summary, task tree, recent activity, and blocked_tasks "
+        "with blocker comments. Returns read hints. Optional api_key for agent context."
     ),
     "project_update": (
         "Update project name, description, or status. reason required when changing status "
@@ -82,12 +82,14 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "work is no longer needed. Requires reason."
     ),
     "task_get": (
-        "Get one task with docs_summary, subtask_stats, parent, and created_by. Use before "
-        "task_update to check closure doc status or subtask completion on parents."
+        "Get one task with docs_summary (incl. needs_update/is_stale flags), subtask_stats, parent, "
+        "created_by, and last 5 recent_comments inline. Optional api_key sets is_yours. "
+        "Returns read hints with suggested next actions."
     ),
     "task_list": (
         "List tasks in a project with optional status or parent filter. Includes doc flags and "
-        "subtask stats by default. For full hierarchy prefer task_subtree or project_snapshot."
+        "subtask stats by default. Optional api_key sets is_yours per task. Returns read hints. "
+        "For full hierarchy prefer task_subtree or project_snapshot."
     ),
     "task_move": (
         "Reorder or reparent a task. Use after_task_id to insert between siblings; parent_id "

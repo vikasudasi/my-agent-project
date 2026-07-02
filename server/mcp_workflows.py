@@ -17,6 +17,7 @@ from db import (
     upsert_task_doc,
 )
 from mcp_enrich import build_project_snapshot, enrich_task, list_projects_enriched
+from mcp_read_hints import build_blocked_tasks_summary
 from mcp_validation import ValidationError, require_text, validate_comment_content, validate_doc_content
 from mcp_validation import MIN_REASON_LEN
 
@@ -141,11 +142,11 @@ def run_session_context(
     }
 
     if include_snapshot:
-        snapshot = build_project_snapshot(project_id)
+        snapshot = build_project_snapshot(project_id, for_read=True)
         if snapshot:
             result["snapshot"] = snapshot
 
-    blocked = _blocked_tasks_summary(project_id)
+    blocked = build_blocked_tasks_summary(project_id)
     if blocked:
         result["blocked_tasks"] = blocked
 
@@ -177,25 +178,6 @@ def enrich_project_dict(project_id: str) -> Optional[dict[str, Any]]:
         **progress,
         "docs_summary": get_docs_summary("project", project_id),
     }
-
-
-def _blocked_tasks_summary(project_id: str) -> list[dict[str, Any]]:
-    tree = get_task_subtree(project_id)
-    blocked: list[dict[str, Any]] = []
-    for task in _flatten_task_tree(tree):
-        if task.get("status") != "blocked":
-            continue
-        comments = list_comments("task", task["id"], limit=3)
-        latest_blocker = next(
-            (c for c in reversed(comments) if "[blocker]" in c.get("content", "").lower()),
-            comments[-1] if comments else None,
-        )
-        blocked.append({
-            "id": task["id"],
-            "title": task["title"],
-            "latest_comment": latest_blocker,
-        })
-    return blocked
 
 
 def run_task_begin_work(

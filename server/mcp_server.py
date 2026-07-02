@@ -61,6 +61,7 @@ from mcp_enrich import (
     list_projects_enriched,
 )
 from mcp_instructions import MCP_INSTRUCTIONS
+from mcp_read_hints import build_read_hints
 from mcp_response_hints import build_hints
 from mcp_tool_descriptions import DOC_TYPE_PROP, STATUS_TASK_PROP, TOOL_DESCRIPTIONS
 from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
@@ -88,6 +89,11 @@ logger = logging.getLogger("mcp-server")
 _API_KEY_PROP = {
     "type": "string",
     "description": "API key for authentication. Get one via agent_onboard tool.",
+}
+
+_API_KEY_OPTIONAL_PROP = {
+    "type": "string",
+    "description": "Optional. When valid, enables is_yours on task read responses.",
 }
 
 # Tools that require authentication (read-only tools skip auth)
@@ -152,6 +158,29 @@ def _ok_mutation(
         old=old,
         had_initial_spec=had_initial_spec,
         wrote_closure_note=wrote_closure_note,
+    )
+    return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
+
+
+def _optional_agent_name(arguments: dict) -> tuple[Optional[str], Optional[CallToolResult]]:
+    api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+    if not api_key:
+        return None, None
+    agent = validate_api_key(api_key)
+    if not agent:
+        return None, _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
+    return agent["name"], None
+
+
+def _ok_read(
+    data: Any,
+    tool: str,
+    *,
+    arguments: Optional[dict] = None,
+    agent_name: Optional[str] = None,
+) -> CallToolResult:
+    warnings, next_steps = build_read_hints(
+        tool, data, arguments=arguments, agent_name=agent_name
     )
     return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
 
@@ -221,6 +250,7 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Include last 10 audit entries (default: false)",
                     },
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
@@ -232,6 +262,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
@@ -332,6 +363,7 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Include docs_summary and subtask_stats (default: true)",
                     },
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
@@ -341,7 +373,10 @@ async def list_tools() -> list[Tool]:
             description=_tool("task_get"),
             inputSchema={
                 "type": "object",
-                "properties": {"task_id": {"type": "string"}},
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "api_key": _API_KEY_OPTIONAL_PROP,
+                },
                 "required": ["task_id"],
             },
         ),
@@ -691,22 +726,30 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 q=arguments.get("q"),
                 include_progress=include_progress,
             )
-            return _ok(result, tool=name)
+            return _ok_read(result, name, arguments=arguments)
 
         elif name == "project_get":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = get_project_progress(arguments["project_id"])
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            result = enrich_project(result)
+            result = enrich_project(result, for_read=True)
             if arguments.get("include_recent_activity"):
                 result["recent_activity"] = get_project_audit_log(arguments["project_id"], limit=10)
-            return _ok(result, tool=name)
+            return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_snapshot":
-            snapshot = build_project_snapshot(arguments["project_id"])
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
+            snapshot = build_project_snapshot(
+                arguments["project_id"], for_read=True, agent_name=agent_name
+            )
             if not snapshot:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            return _ok(snapshot, tool=name)
+            return _ok_read(snapshot, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_update":
             old = get_project(arguments["project_id"])
@@ -800,20 +843,29 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
 
         elif name == "task_list":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = list_tasks(
                 arguments["project_id"],
                 status=arguments.get("status"),
                 parent_id=arguments.get("parent_id"),
             )
             if arguments.get("include_enrichment", True):
-                result = enrich_task_list(result)
-            return _ok(result, tool=name)
+                result = enrich_task_list(result, for_read=True, agent_name=agent_name)
+            return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "task_get":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = get_task(arguments["task_id"])
             if not result:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
-            return _ok(enrich_task(result), tool=name)
+            enriched = enrich_task(
+                result, for_read=True, agent_name=agent_name, comment_limit=5
+            )
+            return _ok_read(enriched, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "task_tree":
             result = get_task_tree(arguments["task_id"])
@@ -893,7 +945,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             meta = get_project_doc_meta(arguments["project_id"], doc_type=doc_type)
             if not get_project(arguments["project_id"]):
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            return _ok(enrich_doc_response("project", arguments["project_id"], doc_type, meta), tool=name)
+            payload = enrich_doc_response("project", arguments["project_id"], doc_type, meta)
+            return _ok_read(payload, name, arguments=arguments)
 
         elif name == "doc_project_update":
             doc_type = arguments.get("doc_type", "spec")
@@ -918,7 +971,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             if not get_task(arguments["task_id"]):
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             meta = get_task_doc_meta(arguments["task_id"], doc_type=doc_type)
-            return _ok(enrich_doc_response("task", arguments["task_id"], doc_type, meta), tool=name)
+            payload = enrich_doc_response("task", arguments["task_id"], doc_type, meta)
+            return _ok_read(payload, name, arguments=arguments)
 
         elif name == "doc_task_update":
             doc_type = arguments.get("doc_type", "spec")
