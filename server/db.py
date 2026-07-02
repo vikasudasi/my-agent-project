@@ -781,6 +781,40 @@ def get_recent_activity(limit: int = 25) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_task_last_in_progress_agent(task_id: str) -> Optional[str]:
+    """Agent who most recently moved this task to in_progress."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT agent_name FROM agent_audit_log "
+            "WHERE entity_type = 'task' AND entity_id = ? "
+            "AND action = 'status_changed' AND field = 'status' AND new_value = 'in_progress' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    return row["agent_name"] if row else None
+
+
+def get_agent_resumed_tasks_in_project(agent_name: str, project_id: str) -> list[dict]:
+    """In-progress tasks in a project this agent most recently started working on."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.* FROM tasks t
+            WHERE t.project_id = ? AND t.status = 'in_progress'
+            AND (
+                SELECT a.agent_name FROM agent_audit_log a
+                WHERE a.entity_type = 'task' AND a.entity_id = t.id
+                AND a.action = 'status_changed' AND a.field = 'status'
+                AND a.new_value = 'in_progress'
+                ORDER BY a.created_at DESC LIMIT 1
+            ) = ?
+            ORDER BY t.rank ASC
+            """,
+            (project_id, agent_name),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_task_creator(task_id: str) -> Optional[dict]:
     """Who created a task (from audit log)."""
     with get_connection() as conn:

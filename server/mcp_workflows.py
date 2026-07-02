@@ -4,10 +4,12 @@ from typing import Any, Optional
 
 from db import (
     add_comment,
+    get_agent_resumed_tasks_in_project,
     get_docs_summary,
     get_project_progress,
     get_task,
     get_task_doc_meta,
+    get_task_last_in_progress_agent,
     get_task_subtask_stats,
     get_task_subtree,
     list_comments,
@@ -26,6 +28,14 @@ SESSION_CHECKLIST = [
     "Use task_complete when acceptance criteria are met",
 ]
 
+PROJECT_SESSION_CHECKLIST = [
+    "Multiple agents may work on this project — pick YOUR task, not another agent's",
+    "Review available_tasks (all workable items) and check last_active_agent before claiming work",
+    "Pass task_id to focus this session on the task you intend to work on",
+    "Call task_begin_work on your chosen task_id before making changes",
+    *SESSION_CHECKLIST,
+]
+
 _WORKABLE_STATUSES = frozenset({"pending", "in_progress"})
 
 
@@ -39,32 +49,53 @@ def _flatten_task_tree(nodes: list[dict]) -> list[dict]:
     return flat
 
 
-def suggest_next_task(project_id: str) -> Optional[dict[str, Any]]:
-    """Pick the first in_progress task in tree order, else first pending."""
+def _summarize_task_for_session(task: dict) -> dict[str, Any]:
+    tid = task["id"]
+    docs = get_docs_summary("task", tid)
+    return {
+        "id": tid,
+        "title": task["title"],
+        "status": task["status"],
+        "parent_id": task.get("parent_id"),
+        "has_spec": docs.get("spec", {}).get("exists", False),
+        "last_active_agent": get_task_last_in_progress_agent(tid),
+    }
+
+
+def list_available_tasks(project_id: str) -> list[dict[str, Any]]:
+    """All in_progress and pending tasks in tree order — multiple agents pick from this list."""
     tree = get_task_subtree(project_id)
     flat = _flatten_task_tree(tree)
-    for preferred in ("in_progress", "pending"):
+    available: list[dict[str, Any]] = []
+    for status in ("in_progress", "pending"):
         for task in flat:
-            if task.get("status") == preferred:
-                docs = get_docs_summary("task", task["id"])
-                return {
-                    "id": task["id"],
-                    "title": task["title"],
-                    "status": task["status"],
-                    "parent_id": task.get("parent_id"),
-                    "has_spec": docs.get("spec", {}).get("exists", False),
-                    "reason": f"First {preferred} task in project tree order",
-                }
-    return None
+            if task.get("status") == status:
+                available.append(_summarize_task_for_session(task))
+    return available
+
+
+def _build_focused_task(task_id: str, *, comment_limit: int = 10) -> dict[str, Any]:
+    spec_meta = get_task_doc_meta(task_id, "spec")
+    return {
+        "task": enrich_task(get_task(task_id)),
+        "spec": {
+            "exists": spec_meta is not None,
+            "content": spec_meta["content"] if spec_meta else "",
+            "updated_at": spec_meta["updated_at"] if spec_meta else None,
+        },
+        "recent_comments": list_comments("task", task_id, limit=comment_limit),
+    }
 
 
 def run_session_context(
     *,
     project_id: Optional[str] = None,
+    task_id: Optional[str] = None,
     project_status: str = "active",
     include_snapshot: bool = True,
+    agent_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Return project picker list, or full session context for a selected project."""
+    """Return project picker list, or session context scoped to a selected project/task."""
     status_filter = None if project_status == "all" else project_status
 
     if not project_id:
@@ -72,7 +103,7 @@ def run_session_context(
         checklist = [
             "Choose the project you will work on this session",
             "Call session_context again with that project_id",
-            "Then call task_begin_work on the task you intend to work on",
+            "Pass task_id when you know which task is yours in a shared project",
         ]
         if not projects:
             checklist.insert(0, "No projects found — create one with project_create")
@@ -94,21 +125,39 @@ def run_session_context(
         "mode": "project_session",
         "project_id": project_id,
         "project": project,
-        "session_checklist": list(SESSION_CHECKLIST),
+        "available_tasks": list_available_tasks(project_id),
+        "session_checklist": list(PROJECT_SESSION_CHECKLIST),
     }
+
+    if agent_name:
+        resumed = get_agent_resumed_tasks_in_project(agent_name, project_id)
+        result["my_tasks"] = [_summarize_task_for_session(t) for t in resumed]
 
     if include_snapshot:
         snapshot = build_project_snapshot(project_id)
         if snapshot:
             result["snapshot"] = snapshot
 
-    suggested = suggest_next_task(project_id)
-    if suggested:
-        result["suggested_next_task"] = suggested
-
     blocked = _blocked_tasks_summary(project_id)
     if blocked:
         result["blocked_tasks"] = blocked
+
+    if task_id:
+        task = get_task(task_id)
+        if not task:
+            raise ValidationError(
+                f"Task '{task_id}' not found",
+                code="NOT_FOUND",
+                field="task_id",
+            )
+        if task["project_id"] != project_id:
+            raise ValidationError(
+                f"Task '{task_id}' does not belong to project '{project_id}'",
+                code="VALIDATION_ERROR",
+                field="task_id",
+            )
+        result["task_id"] = task_id
+        result["focused_task"] = _build_focused_task(task_id)
 
     return result
 

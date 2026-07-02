@@ -108,10 +108,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Prefer task_begin_work, task_record_progress, and task_complete for the standard workflow."
     ),
     "session_context": (
-        "Session-start tool scoped to one project. Without project_id: returns project list "
-        "so you can choose which project to work on. With project_id: returns snapshot, "
-        "suggested next task, blocked tasks, and checklist for that project only — never "
-        "auto-selects a project for you."
+        "Session-start tool scoped to one project. Without project_id: returns project list. "
+        "With project_id: returns available_tasks (all in_progress/pending — multiple agents pick "
+        "different tasks), blocked_tasks, and snapshot. Add task_id to focus on YOUR task. "
+        "Optional api_key returns my_tasks you most recently started. Never assigns a single task "
+        "to all agents."
     ),
     "task_begin_work": (
         "Start working on a task in one call: returns spec, recent comments, checklist, and sets "

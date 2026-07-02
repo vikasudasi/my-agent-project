@@ -7,11 +7,11 @@ import pytest
 import db
 from mcp_validation import ValidationError
 from mcp_workflows import (
+    list_available_tasks,
     run_session_context,
     run_task_begin_work,
     run_task_complete,
     run_task_record_progress,
-    suggest_next_task,
 )
 
 
@@ -32,23 +32,66 @@ class TestSessionContext:
         assert "project_id" not in result
         assert "snapshot" not in result
 
-    def test_suggest_next_task_prefers_in_progress(self, project):
+    def test_lists_all_workable_tasks(self, project):
         t1 = db.create_task(project["id"], "Pending task")
         t2 = db.create_task(project["id"], "Active task")
         db.update_task(t2["id"], status="in_progress")
-        suggested = suggest_next_task(project["id"])
-        assert suggested is not None
-        assert suggested["id"] == t2["id"]
-        assert suggested["status"] == "in_progress"
+        available = list_available_tasks(project["id"])
+        ids = {t["id"] for t in available}
+        assert t1["id"] in ids
+        assert t2["id"] in ids
+        assert all(t["status"] in ("pending", "in_progress") for t in available)
 
-    def test_session_context_with_project(self, project, task):
+    def test_session_context_with_project_lists_available_tasks(self, project, task):
         db.update_task(task["id"], status="in_progress")
+        other = db.create_task(project["id"], "Other pending")
         result = run_session_context(project_id=project["id"])
         assert result["mode"] == "project_session"
-        assert result["project_id"] == project["id"]
-        assert "snapshot" in result
-        assert result["suggested_next_task"]["id"] == task["id"]
-        assert result["session_checklist"]
+        assert "suggested_next_task" not in result
+        ids = {t["id"] for t in result["available_tasks"]}
+        assert task["id"] in ids
+        assert other["id"] in ids
+
+    def test_session_context_with_task_id_focuses(self, project, task):
+        db.update_task(task["id"], status="in_progress")
+        result = run_session_context(project_id=project["id"], task_id=task["id"])
+        assert result["task_id"] == task["id"]
+        assert result["focused_task"]["task"]["id"] == task["id"]
+        assert "spec" in result["focused_task"]
+
+    def test_task_id_wrong_project_raises(self, project, task):
+        other = db.create_project("Other", "A" * 40)
+        try:
+            with pytest.raises(ValidationError) as exc:
+                run_session_context(project_id=other["id"], task_id=task["id"])
+            assert exc.value.field == "task_id"
+        finally:
+            db.delete_project(other["id"])
+
+    def test_my_tasks_for_agent(self, project, agent):
+        task = db.create_task(project["id"], "Agent task", "A" * 40)
+        run_task_begin_work(
+            task["id"],
+            agent_name=agent["name"],
+            master_name=agent["master_name"],
+        )
+        result = run_session_context(
+            project_id=project["id"],
+            agent_name=agent["name"],
+        )
+        assert len(result["my_tasks"]) == 1
+        assert result["my_tasks"][0]["id"] == task["id"]
+
+    def test_last_active_agent_on_available_tasks(self, project, agent):
+        task = db.create_task(project["id"], "Claimed task", "A" * 40)
+        run_task_begin_work(
+            task["id"],
+            agent_name=agent["name"],
+            master_name=agent["master_name"],
+        )
+        available = list_available_tasks(project["id"])
+        entry = next(t for t in available if t["id"] == task["id"])
+        assert entry["last_active_agent"] == agent["name"]
 
     def test_session_context_unknown_project_raises(self):
         with pytest.raises(ValidationError) as exc:

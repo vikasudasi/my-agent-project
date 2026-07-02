@@ -516,6 +516,20 @@ async def list_tools() -> list[Tool]:
                             "and choose one — full context is never returned without this."
                         ),
                     },
+                    "task_id": {
+                        "type": "string",
+                        "description": (
+                            "Task you will work on this session. Use in shared projects so each "
+                            "agent focuses on their own task. Returns focused_task with spec and comments."
+                        ),
+                    },
+                    "api_key": {
+                        **_API_KEY_PROP,
+                        "description": (
+                            "Optional. When provided, includes my_tasks — in_progress tasks "
+                            "you most recently started in this project."
+                        ),
+                    },
                     "project_status": {
                         "type": "string",
                         "enum": ["active", "archived", "completed", "all"],
@@ -950,10 +964,20 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 
         # ---- Workflow tools ----
         elif name == "session_context":
+            agent_name = None
+            api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+            if api_key:
+                auth_agent = validate_api_key(api_key)
+                if not auth_agent:
+                    return _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
+                agent_name = auth_agent["name"]
+
             result = run_session_context(
                 project_id=arguments.get("project_id"),
+                task_id=arguments.get("task_id"),
                 project_status=arguments.get("project_status", "active"),
                 include_snapshot=arguments.get("include_snapshot", True),
+                agent_name=agent_name,
             )
             next_steps: list[str] = []
             if result["mode"] == "select_project":
@@ -964,9 +988,17 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 else:
                     next_steps.append("project_create to start a new project")
             else:
-                suggested = result.get("suggested_next_task")
-                if suggested:
-                    next_steps.append(f"task_begin_work task_id={suggested['id']}")
+                chosen_task = arguments.get("task_id")
+                my_tasks = result.get("my_tasks") or []
+                if chosen_task:
+                    next_steps.append(f"task_begin_work task_id={chosen_task}")
+                elif len(my_tasks) == 1:
+                    next_steps.append(f"task_begin_work task_id={my_tasks[0]['id']}  # resume your task")
+                elif result.get("available_tasks"):
+                    next_steps.append(
+                        "Pick YOUR task from available_tasks (check last_active_agent), "
+                        "then session_context with task_id and task_begin_work"
+                    )
                 else:
                     next_steps.append(f"task_create on project {result['project_id']} to add work items")
             return _ok(result, tool=name, next_steps=next_steps)
