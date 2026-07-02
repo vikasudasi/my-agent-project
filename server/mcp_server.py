@@ -60,6 +60,10 @@ from mcp_enrich import (
     build_project_snapshot,
     list_projects_enriched,
 )
+from mcp_instructions import MCP_INSTRUCTIONS
+from mcp_read_hints import build_read_hints
+from mcp_response_hints import build_hints
+from mcp_tool_descriptions import DOC_TYPE_PROP, STATUS_TASK_PROP, TOOL_DESCRIPTIONS
 from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
 from mcp_validation import (
     validate_project_create,
@@ -70,16 +74,12 @@ from mcp_validation import (
     require_text,
     MIN_REASON_LEN,
 )
+from mcp_workflows import run_session_context, run_task_begin_work, run_task_record_progress, run_task_complete
 
 server = Server(
     "task-manager",
     version="2.0.0",
-    instructions=(
-        "Task Management System for AI Agents. "
-        "Always provide meaningful descriptions when creating projects and tasks. "
-        "Write spec docs with ## Objective and ## Acceptance Criteria. "
-        "Prefer project_archive over project_delete."
-    ),
+    instructions=MCP_INSTRUCTIONS,
 )
 
 logger = logging.getLogger("mcp-server")
@@ -91,6 +91,11 @@ _API_KEY_PROP = {
     "description": "API key for authentication. Get one via agent_onboard tool.",
 }
 
+_API_KEY_OPTIONAL_PROP = {
+    "type": "string",
+    "description": "Optional. When valid, enables is_yours on task read responses.",
+}
+
 # Tools that require authentication (read-only tools skip auth)
 _MUTATION_TOOLS = {
     "project_create", "project_update", "project_delete",
@@ -98,6 +103,7 @@ _MUTATION_TOOLS = {
     "task_create", "task_update", "task_move", "task_delete",
     "doc_project_update", "doc_task_update",
     "comment_add",
+    "task_begin_work", "task_record_progress", "task_complete",
 }
 
 _DESC_PROP = {
@@ -109,12 +115,32 @@ _DESC_PROP = {
 _REASON_PROP = {
     "type": "string",
     "minLength": 20,
-    "description": "Required when changing status. Explain why.",
+    "description": "Required when changing status or deleting. Explain why in plain language.",
+}
+
+_INITIAL_SPEC_PROP = {
+    "type": "string",
+    "minLength": 80,
+    "description": "Required. Markdown with ## Objective and ## Acceptance Criteria.",
 }
 
 
-def _ok(data: Any, tool: Optional[str] = None) -> CallToolResult:
+def _tool(name: str) -> str:
+    return TOOL_DESCRIPTIONS[name]
+
+
+def _ok(
+    data: Any,
+    tool: Optional[str] = None,
+    *,
+    warnings: Optional[list[str]] = None,
+    next_steps: Optional[list[str]] = None,
+) -> CallToolResult:
     body: dict[str, Any] = {"ok": True, "data": data}
+    if warnings:
+        body["warnings"] = warnings
+    if next_steps:
+        body["next_steps"] = next_steps
     if tool:
         body["meta"] = {"tool": tool}
     return CallToolResult(
@@ -122,10 +148,58 @@ def _ok(data: Any, tool: Optional[str] = None) -> CallToolResult:
     )
 
 
-def _err(msg: str, code: str = "ERROR", field: Optional[str] = None) -> CallToolResult:
+def _ok_mutation(
+    data: Any,
+    tool: str,
+    *,
+    arguments: Optional[dict] = None,
+    old: Optional[dict] = None,
+    wrote_closure_note: bool = False,
+) -> CallToolResult:
+    warnings, next_steps = build_hints(
+        tool,
+        data if isinstance(data, dict) else {},
+        arguments=arguments,
+        old=old,
+        wrote_closure_note=wrote_closure_note,
+    )
+    return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
+
+
+def _optional_agent_name(arguments: dict) -> tuple[Optional[str], Optional[CallToolResult]]:
+    api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+    if not api_key:
+        return None, None
+    agent = validate_api_key(api_key)
+    if not agent:
+        return None, _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
+    return agent["name"], None
+
+
+def _ok_read(
+    data: Any,
+    tool: str,
+    *,
+    arguments: Optional[dict] = None,
+    agent_name: Optional[str] = None,
+) -> CallToolResult:
+    warnings, next_steps = build_read_hints(
+        tool, data, arguments=arguments, agent_name=agent_name
+    )
+    return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
+
+
+def _err(
+    msg: str,
+    code: str = "ERROR",
+    field: Optional[str] = None,
+    remediation: Optional[list[str]] = None,
+) -> CallToolResult:
     error: dict[str, Any] = {"code": code, "message": msg}
     if field:
         error["field"] = field
+    if remediation:
+        error["remediation"] = remediation
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps({"ok": False, "error": error}))],
         isError=True,
@@ -137,7 +211,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="project_create",
-            description="Create a new project. Description is required. Optionally provide initial_spec markdown.",
+            description=_tool("project_create"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -147,19 +221,15 @@ async def list_tools() -> list[Tool]:
                         "description": "Short unique project name",
                     },
                     "description": _DESC_PROP,
-                    "initial_spec": {
-                        "type": "string",
-                        "minLength": 80,
-                        "description": "Recommended. Markdown with ## Objective and ## Acceptance Criteria",
-                    },
+                    "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["name", "description", "api_key"],
+                "required": ["name", "description", "initial_spec", "api_key"],
             },
         ),
         Tool(
             name="project_list",
-            description="List projects with optional filters and progress stats.",
+            description=_tool("project_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -178,7 +248,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_get",
-            description="Get project details, progress, and docs summary.",
+            description=_tool("project_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -187,24 +257,26 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Include last 10 audit entries (default: false)",
                     },
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="project_snapshot",
-            description="Full project planning view: progress, docs summary, task tree, recent activity.",
+            description=_tool("project_snapshot"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="project_update",
-            description="Update project fields. reason required when changing status.",
+            description=_tool("project_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -224,7 +296,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_archive",
-            description="Archive a project (soft delete). Preferred over project_delete.",
+            description=_tool("project_archive"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -237,7 +309,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_restore",
-            description="Restore an archived project to active status.",
+            description=_tool("project_restore"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -249,7 +321,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="project_delete",
-            description="Permanently delete a project and all data. Use project_archive instead when possible.",
+            description=_tool("project_delete"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -262,7 +334,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_create",
-            description="Create a task. Description required. Use initial_spec for root/non-trivial tasks.",
+            description=_tool("task_create"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -275,48 +347,45 @@ async def list_tools() -> list[Tool]:
                     "description": _DESC_PROP,
                     "parent_id": {"type": "string", "description": "Parent task ID for subtasks"},
                     "after_task_id": {"type": "string", "description": "Insert after this sibling"},
-                    "initial_spec": {
-                        "type": "string",
-                        "minLength": 80,
-                        "description": "Markdown spec with ## Objective and ## Acceptance Criteria",
-                    },
+                    "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "title", "description", "api_key"],
+                "required": ["project_id", "title", "description", "initial_spec", "api_key"],
             },
         ),
         Tool(
             name="task_list",
-            description="List tasks with optional filters. Includes subtask and doc flags by default.",
+            description=_tool("task_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                    },
+                    "status": STATUS_TASK_PROP,
                     "parent_id": {"type": "string", "description": "List children of this task"},
                     "include_enrichment": {
                         "type": "boolean",
                         "description": "Include docs_summary and subtask_stats (default: true)",
                     },
+                    "api_key": _API_KEY_OPTIONAL_PROP,
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="task_get",
-            description="Get task details with docs summary, subtask stats, created_by, and parent.",
+            description=_tool("task_get"),
             inputSchema={
                 "type": "object",
-                "properties": {"task_id": {"type": "string"}},
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "api_key": _API_KEY_OPTIONAL_PROP,
+                },
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="task_tree",
-            description="Get a task and its full recursive subtree of nested children.",
+            description=_tool("task_tree"),
             inputSchema={
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}},
@@ -325,7 +394,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_subtree",
-            description="Get the full hierarchical task tree for an entire project.",
+            description=_tool("task_subtree"),
             inputSchema={
                 "type": "object",
                 "properties": {"project_id": {"type": "string"}},
@@ -334,21 +403,23 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_update",
-            description="Update a task. blocker_reason required for blocked; closure_note or closure doc for completed.",
+            description=_tool("task_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "title": {"type": "string", "minLength": 3},
                     "description": _DESC_PROP,
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
-                    },
+                    "status": STATUS_TASK_PROP,
                     "blocker_reason": {
                         "type": "string",
                         "minLength": 20,
                         "description": "Required when status=blocked",
+                    },
+                    "failure_reason": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Required when status=failed",
                     },
                     "closure_note": {
                         "type": "string",
@@ -362,7 +433,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_move",
-            description="Move or reparent a task. Use after_task_id to reorder siblings.",
+            description=_tool("task_move"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -379,7 +450,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="task_delete",
-            description="Permanently delete a task and subtasks. Prefer status=cancelled when possible.",
+            description=_tool("task_delete"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -392,25 +463,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_project_get",
-            description="Get project markdown doc with metadata.",
+            description=_tool("doc_project_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                 },
                 "required": ["project_id"],
             },
         ),
         Tool(
             name="doc_project_update",
-            description="Update project markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
+            description=_tool("doc_project_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string"},
                     "content": {"type": "string", "minLength": 50},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
                 "required": ["project_id", "content", "api_key"],
@@ -418,25 +489,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="doc_task_get",
-            description="Get task markdown doc with metadata.",
+            description=_tool("doc_task_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                 },
                 "required": ["task_id"],
             },
         ),
         Tool(
             name="doc_task_update",
-            description="Update task markdown doc. Spec requires ## Objective and ## Acceptance Criteria.",
+            description=_tool("doc_task_update"),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "content": {"type": "string", "minLength": 50},
-                    "doc_type": {"type": "string", "enum": ["spec", "progress", "closure"]},
+                    "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
                 "required": ["task_id", "content", "api_key"],
@@ -444,7 +515,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="comment_add",
-            description="Add a comment to a project or task.",
+            description=_tool("comment_add"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -463,7 +534,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="comment_list",
-            description="List comments for a project or task.",
+            description=_tool("comment_list"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -476,8 +547,115 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="session_context",
+            description=_tool("session_context"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": (
+                            "Project to load session context for. Omit only to list projects "
+                            "and choose one — full context is never returned without this."
+                        ),
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": (
+                            "Task you will work on this session. Use in shared projects so each "
+                            "agent focuses on their own task. Returns focused_task with spec and comments."
+                        ),
+                    },
+                    "api_key": {
+                        **_API_KEY_PROP,
+                        "description": (
+                            "Optional. When provided, sets is_yours on available_tasks entries "
+                            "for in_progress tasks you most recently started."
+                        ),
+                    },
+                    "project_status": {
+                        "type": "string",
+                        "enum": ["active", "archived", "completed", "all"],
+                        "description": "Filter when listing projects without project_id (default: active)",
+                    },
+                    "include_snapshot": {
+                        "type": "boolean",
+                        "description": "Include full project snapshot when project_id is set (default: true)",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="task_begin_work",
+            description=_tool("task_begin_work"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "comment_limit": {
+                        "type": "integer",
+                        "description": "Max recent comments to include (default: 10)",
+                    },
+                    "comment_since": {
+                        "type": "string",
+                        "description": "ISO timestamp — only comments after this time",
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "api_key"],
+            },
+        ),
+        Tool(
+            name="task_record_progress",
+            description=_tool("task_record_progress"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "content": {
+                        "type": "string",
+                        "minLength": 50,
+                        "description": "Progress doc markdown (session findings and status)",
+                    },
+                    "comment": {
+                        "type": "string",
+                        "minLength": 10,
+                        "description": "Optional timeline comment to add alongside progress doc",
+                    },
+                    "comment_type": {
+                        "type": "string",
+                        "enum": ["note", "blocker", "decision", "question"],
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "content", "api_key"],
+            },
+        ),
+        Tool(
+            name="task_complete",
+            description=_tool("task_complete"),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "closure": {
+                        "type": "string",
+                        "minLength": 80,
+                        "description": "Full closure markdown with ## Summary (preferred)",
+                    },
+                    "closure_note": {
+                        "type": "string",
+                        "minLength": 20,
+                        "description": "Short summary if full closure markdown not provided",
+                    },
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["task_id", "api_key"],
+            },
+        ),
+        Tool(
             name="agent_onboard",
-            description="Register a new agent. Returns API key once — save it immediately.",
+            description=_tool("agent_onboard"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -489,7 +667,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="agent_list",
-            description="List registered agents. Requires auth.",
+            description=_tool("agent_list"),
             inputSchema={
                 "type": "object",
                 "properties": {"api_key": _API_KEY_PROP},
@@ -498,7 +676,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="audit_log_get",
-            description="Get audit log entries. scope=project_with_tasks returns all project+task activity.",
+            description=_tool("audit_log_get"),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -536,15 +714,10 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         if name == "project_create":
             validated = validate_project_create(arguments)
             result = create_project(validated["name"], validated["description"])
-            if validated.get("initial_spec"):
-                upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
+            upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
             enriched = enrich_project(result)
-            enriched["next_steps"] = [
-                "Create root tasks with task_create (include description and initial_spec)",
-                "Write project spec via doc_project_update if initial_spec was omitted",
-            ]
-            return _ok(enriched, tool=name)
+            return _ok_mutation(enriched, name, arguments=arguments)
 
         elif name == "project_list":
             status = arguments.get("status", "active")
@@ -555,22 +728,30 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 q=arguments.get("q"),
                 include_progress=include_progress,
             )
-            return _ok(result, tool=name)
+            return _ok_read(result, name, arguments=arguments)
 
         elif name == "project_get":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = get_project_progress(arguments["project_id"])
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            result = enrich_project(result)
+            result = enrich_project(result, for_read=True)
             if arguments.get("include_recent_activity"):
                 result["recent_activity"] = get_project_audit_log(arguments["project_id"], limit=10)
-            return _ok(result, tool=name)
+            return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_snapshot":
-            snapshot = build_project_snapshot(arguments["project_id"])
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
+            snapshot = build_project_snapshot(
+                arguments["project_id"], for_read=True, agent_name=agent_name
+            )
             if not snapshot:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            return _ok(snapshot, tool=name)
+            return _ok_read(snapshot, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_update":
             old = get_project(arguments["project_id"])
@@ -596,7 +777,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                               arguments["project_id"], "updated", field,
                               str(old_val) if old_val else None,
                               str(new_val) if new_val else None)
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(
+                enrich_project(result), name, arguments=arguments, old=old
+            )
 
         elif name == "project_archive":
             reason = require_text(
@@ -609,7 +792,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("project", arguments["project_id"], f"[archived] {reason}", author=agent["name"])
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "updated", "status", old["status"], "archived")
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_restore":
             old = get_project(arguments["project_id"])
@@ -618,7 +801,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             result = update_project(arguments["project_id"], status="active")
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "updated", "status", old["status"], "active")
-            return _ok(enrich_project(result), tool=name)
+            return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_delete":
             reason = require_text(
@@ -630,9 +813,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("project", pid, f"[deleted] {reason}", author=agent["name"])
             delete_project(pid)
             log_audit(agent["name"], agent["master_name"], "project", pid, "deleted")
-            return _ok({"deleted": True, "project_id": pid}, tool=name)
-
-        # ---- Tasks ----
+            return _ok(
+                {"deleted": True, "project_id": pid},
+                tool=name,
+                warnings=["Project and all tasks, docs, and comments were permanently deleted."],
+            )
         elif name == "task_create":
             validated = validate_task_create(arguments)
             result = create_task(
@@ -644,31 +829,39 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            if validated.get("initial_spec"):
-                upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
+            upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
             log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
             enriched = enrich_task(result)
             enriched["created_by"] = {
                 "agent_name": agent["name"],
                 "master_name": agent["master_name"],
             }
-            return _ok(enriched, tool=name)
+            return _ok_mutation(enriched, name, arguments=arguments)
 
         elif name == "task_list":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = list_tasks(
                 arguments["project_id"],
                 status=arguments.get("status"),
                 parent_id=arguments.get("parent_id"),
             )
             if arguments.get("include_enrichment", True):
-                result = enrich_task_list(result)
-            return _ok(result, tool=name)
+                result = enrich_task_list(result, for_read=True, agent_name=agent_name)
+            return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "task_get":
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
             result = get_task(arguments["task_id"])
             if not result:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
-            return _ok(enrich_task(result), tool=name)
+            enriched = enrich_task(
+                result, for_read=True, agent_name=agent_name, comment_limit=5
+            )
+            return _ok_read(enriched, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "task_tree":
             result = get_task_tree(arguments["task_id"])
@@ -684,18 +877,27 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             old = get_task(arguments["task_id"])
             if not old:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
-            has_closure = get_task_doc_meta(arguments["task_id"], "closure") is not None
-            extras = validate_task_update(arguments, old, has_closure)
+            tid = arguments["task_id"]
+            has_closure = get_task_doc_meta(tid, "closure") is not None
+            has_spec = get_task_doc_meta(tid, "spec") is not None
+            extras = validate_task_update(
+                arguments, old, has_closure, has_spec_doc=has_spec
+            )
             new_status = arguments.get("status")
             if new_status == "blocked" and extras.get("blocker_reason"):
                 add_comment(
-                    "task", arguments["task_id"],
+                    "task", tid,
                     f"[blocker] {extras['blocker_reason']}", author=agent["name"],
                 )
+            if new_status == "failed" and extras.get("failure_reason"):
+                add_comment(
+                    "task", tid,
+                    f"[failed] {extras['failure_reason']}", author=agent["name"],
+                )
             if new_status == "completed" and extras.get("closure_note"):
-                upsert_task_doc(arguments["task_id"], f"## Summary\n{extras['closure_note']}", doc_type="closure")
+                upsert_task_doc(tid, f"## Summary\n{extras['closure_note']}", doc_type="closure")
             result = update_task(
-                arguments["task_id"],
+                tid,
                 title=arguments.get("title"),
                 description=arguments.get("description"),
                 status=new_status,
@@ -706,13 +908,18 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 if old_val != new_val:
                     action = "status_changed" if field == "status" else "updated"
                     log_audit(agent["name"], agent["master_name"], "task",
-                              arguments["task_id"], action, field,
+                              tid, action, field,
                               str(old_val) if old_val else None,
                               str(new_val) if new_val else None)
-            return _ok(enrich_task(result), tool=name)
+            return _ok_mutation(
+                enrich_task(result),
+                name,
+                arguments=arguments,
+                old=old,
+                wrote_closure_note=bool(extras.get("closure_note")),
+            )
 
         elif name == "task_move":
-            after = arguments.get("after_task_id")
             parent = arguments.get("parent_id")
             if parent == "":
                 parent = None
@@ -724,7 +931,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 log_audit(agent["name"], agent["master_name"], "task",
                           arguments["task_id"], "moved", "parent_id",
                           old.get("parent_id"), result.get("parent_id"))
-            return _ok(enrich_task(result), tool=name)
+            return _ok_mutation(enrich_task(result), name, arguments=arguments)
 
         elif name == "task_delete":
             reason = validate_task_delete(arguments)
@@ -734,15 +941,18 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             add_comment("task", tid, f"[deleted] {reason}", author=agent["name"])
             delete_task(tid)
             log_audit(agent["name"], agent["master_name"], "task", tid, "deleted")
-            return _ok({"deleted": True, "task_id": tid}, tool=name)
-
-        # ---- Documentation ----
+            return _ok(
+                {"deleted": True, "task_id": tid},
+                tool=name,
+                warnings=["Task and its subtasks were permanently deleted."],
+            )
         elif name == "doc_project_get":
             doc_type = arguments.get("doc_type", "spec")
             meta = get_project_doc_meta(arguments["project_id"], doc_type=doc_type)
             if not get_project(arguments["project_id"]):
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            return _ok(enrich_doc_response("project", arguments["project_id"], doc_type, meta), tool=name)
+            payload = enrich_doc_response("project", arguments["project_id"], doc_type, meta)
+            return _ok_read(payload, name, arguments=arguments)
 
         elif name == "doc_project_update":
             doc_type = arguments.get("doc_type", "spec")
@@ -753,19 +963,22 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             log_audit(agent["name"], agent["master_name"], "project",
                       arguments["project_id"], "doc_updated", f"doc_{doc_type}")
             meta = get_project_doc_meta(arguments["project_id"], doc_type)
-            return _ok({
+            doc_payload = {
                 "updated": True,
+                "project_id": arguments["project_id"],
                 "doc_type": doc_type,
                 "updated_at": meta["updated_at"] if meta else None,
                 "char_count": len(content),
-            }, tool=name)
+            }
+            return _ok_mutation(doc_payload, name, arguments=arguments)
 
         elif name == "doc_task_get":
             doc_type = arguments.get("doc_type", "spec")
             if not get_task(arguments["task_id"]):
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             meta = get_task_doc_meta(arguments["task_id"], doc_type=doc_type)
-            return _ok(enrich_doc_response("task", arguments["task_id"], doc_type, meta), tool=name)
+            payload = enrich_doc_response("task", arguments["task_id"], doc_type, meta)
+            return _ok_read(payload, name, arguments=arguments)
 
         elif name == "doc_task_update":
             doc_type = arguments.get("doc_type", "spec")
@@ -776,14 +989,14 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             log_audit(agent["name"], agent["master_name"], "task",
                       arguments["task_id"], "doc_updated", f"doc_{doc_type}")
             meta = get_task_doc_meta(arguments["task_id"], doc_type)
-            return _ok({
+            doc_payload = {
                 "updated": True,
+                "task_id": arguments["task_id"],
                 "doc_type": doc_type,
                 "updated_at": meta["updated_at"] if meta else None,
                 "char_count": len(content),
-            }, tool=name)
-
-        # ---- Comments ----
+            }
+            return _ok_mutation(doc_payload, name, arguments=arguments)
         elif name == "comment_add":
             content = validate_comment_content(arguments["content"])
             comment_type = arguments.get("comment_type")
@@ -798,7 +1011,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
             log_audit(agent["name"], agent["master_name"],
                       arguments["entity_type"], arguments["entity_id"], "comment_added")
-            return _ok(result, tool=name)
+            return _ok_mutation(result, name, arguments=arguments)
 
         elif name == "comment_list":
             result = list_comments(
@@ -809,18 +1022,104 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             )
             return _ok(result, tool=name)
 
+        # ---- Workflow tools ----
+        elif name == "session_context":
+            agent_name = None
+            api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+            if api_key:
+                auth_agent = validate_api_key(api_key)
+                if not auth_agent:
+                    return _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
+                agent_name = auth_agent["name"]
+
+            result = run_session_context(
+                project_id=arguments.get("project_id"),
+                task_id=arguments.get("task_id"),
+                project_status=arguments.get("project_status", "active"),
+                include_snapshot=arguments.get("include_snapshot", True),
+                agent_name=agent_name,
+            )
+            next_steps: list[str] = []
+            if result["mode"] == "select_project":
+                if result["projects"]:
+                    next_steps.append(
+                        "Pick the project you will work on, then call session_context with project_id"
+                    )
+                else:
+                    next_steps.append("project_create to start a new project")
+            else:
+                chosen_task = arguments.get("task_id")
+                available = result.get("available_tasks") or []
+                yours = [t for t in available if t.get("is_yours")]
+                if chosen_task:
+                    next_steps.append(f"task_begin_work task_id={chosen_task}")
+                elif len(yours) == 1:
+                    next_steps.append(f"task_begin_work task_id={yours[0]['id']}  # resume your task")
+                elif available:
+                    next_steps.append(
+                        "Pick YOUR task from available_tasks (is_yours or descriptions), "
+                        "then session_context with task_id and task_begin_work"
+                    )
+                else:
+                    next_steps.append(f"task_create on project {result['project_id']} to add work items")
+            return _ok(result, tool=name, next_steps=next_steps)
+
+        elif name == "task_begin_work":
+            payload = run_task_begin_work(
+                arguments["task_id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                comment_limit=arguments.get("comment_limit", 10),
+                comment_since=arguments.get("comment_since"),
+            )
+            warnings = payload.pop("warnings", [])
+            next_steps = ["Call task_record_progress when you have session findings"]
+            if not payload["spec"]["exists"]:
+                next_steps.insert(0, f"doc_task_update task_id={arguments['task_id']} doc_type=spec")
+            return _ok(payload, tool=name, warnings=warnings or None, next_steps=next_steps)
+
+        elif name == "task_record_progress":
+            payload = run_task_record_progress(
+                arguments["task_id"],
+                arguments["content"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                comment=arguments.get("comment"),
+                comment_type=arguments.get("comment_type"),
+            )
+            return _ok(
+                payload,
+                tool=name,
+                next_steps=[f"task_complete task_id={arguments['task_id']} when acceptance criteria are met"],
+            )
+
+        elif name == "task_complete":
+            payload = run_task_complete(
+                arguments["task_id"],
+                agent_name=agent["name"],
+                master_name=agent["master_name"],
+                closure=arguments.get("closure"),
+                closure_note=arguments.get("closure_note"),
+            )
+            warnings = payload.pop("warnings", None)
+            next_steps = payload.pop("next_steps", None)
+            return _ok(payload, tool=name, warnings=warnings, next_steps=next_steps)
+
         # ---- Agent & Audit ----
         elif name == "agent_onboard":
             result = onboard_agent(arguments["name"], arguments["master_name"])
             if not result:
                 return _err(f"Agent '{arguments['name']}' already exists.", code="CONFLICT")
-            return _ok({
-                "agent_id": result["id"],
-                "agent_name": result["name"],
-                "master_name": result["master_name"],
-                "api_key": result["api_key"],
-                "created_at": result["created_at"],
-            }, tool=name)
+            return _ok_mutation(
+                {
+                    "agent_id": result["id"],
+                    "agent_name": result["name"],
+                    "master_name": result["master_name"],
+                    "api_key": result["api_key"],
+                    "created_at": result["created_at"],
+                },
+                name,
+            )
 
         elif name == "agent_list":
             return _ok(list_agents(), tool=name)
@@ -838,7 +1137,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _err(f"Unknown tool: {name}", code="UNKNOWN_TOOL")
 
     except ValidationError as e:
-        return _err(e.message, code=e.code, field=e.field)
+        return _err(e.message, code=e.code, field=e.field, remediation=e.remediation or None)
     except Exception as e:
         return _err(f"Error executing {name}: {str(e)}", code="INTERNAL_ERROR")
 

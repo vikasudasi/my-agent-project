@@ -54,6 +54,12 @@ def _test_db():
 # Fixtures for sample data
 # ---------------------------------------------------------------------------
 
+VALID_SPEC = (
+    "## Objective\nBuild the feature\n## Acceptance Criteria\n- [ ] Done\n"
+    + ("x" * 50)
+)
+
+
 @pytest.fixture
 def project():
     """Create a sample project and yield its dict. Deleted after test."""

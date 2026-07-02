@@ -536,14 +536,20 @@ def count_comments(entity_type: str, entity_id: str) -> int:
 
 def get_task_subtask_stats(task_id: str) -> dict:
     with get_connection() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE parent_id = ?", (task_id,)
-        ).fetchone()[0]
-        completed = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE parent_id = ? AND status = 'completed'",
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE parent_id = ? GROUP BY status",
             (task_id,),
-        ).fetchone()[0]
-    return {"subtask_count": total, "subtasks_completed": completed}
+        ).fetchall()
+    by_status = {r["status"]: r["cnt"] for r in rows}
+    total = sum(by_status.values())
+    completed = by_status.get("completed", 0)
+    terminal = sum(by_status.get(s, 0) for s in ("completed", "cancelled", "failed"))
+    return {
+        "subtask_count": total,
+        "subtasks_completed": completed,
+        "subtasks_terminal": terminal,
+        "subtasks_active": total - terminal,
+    }
 
 
 def get_docs_summary(entity_type: str, entity_id: str) -> dict:
@@ -777,6 +783,40 @@ def get_recent_activity(limit: int = 25) -> list[dict]:
             "WHERE a.entity_type IN ('project', 'task') "
             "ORDER BY a.created_at DESC LIMIT ?",
             (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_task_last_in_progress_agent(task_id: str) -> Optional[str]:
+    """Agent who most recently moved this task to in_progress."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT agent_name FROM agent_audit_log "
+            "WHERE entity_type = 'task' AND entity_id = ? "
+            "AND action = 'status_changed' AND field = 'status' AND new_value = 'in_progress' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    return row["agent_name"] if row else None
+
+
+def get_agent_resumed_tasks_in_project(agent_name: str, project_id: str) -> list[dict]:
+    """In-progress tasks in a project this agent most recently started working on."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.* FROM tasks t
+            WHERE t.project_id = ? AND t.status = 'in_progress'
+            AND (
+                SELECT a.agent_name FROM agent_audit_log a
+                WHERE a.entity_type = 'task' AND a.entity_id = t.id
+                AND a.action = 'status_changed' AND a.field = 'status'
+                AND a.new_value = 'in_progress'
+                ORDER BY a.created_at DESC LIMIT 1
+            ) = ?
+            ORDER BY t.rank ASC
+            """,
+            (project_id, agent_name),
         ).fetchall()
     return [dict(r) for r in rows]
 

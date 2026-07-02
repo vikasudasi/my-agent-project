@@ -1,0 +1,152 @@
+"""Workflow-oriented MCP tool descriptions injected at list_tools time."""
+
+TOOL_DESCRIPTIONS: dict[str, str] = {
+    "agent_onboard": (
+        "Register this agent before any mutations. Returns api_key once — save it immediately "
+        "and pass it on all mutation tools (or set TM_API_KEY). Call once per agent identity."
+    ),
+    "agent_list": (
+        "List registered agents. Use to verify onboarding or see who has access. Requires auth."
+    ),
+    "audit_log_get": (
+        "Read mutation history for a project or task. Use at session start to see what changed "
+        "since your last visit. Set scope=project_with_tasks on a project to include all task activity."
+    ),
+    "comment_add": (
+        "Append a timestamped note to a project or task timeline. Use for quick updates, blockers, "
+        "decisions, and questions — not for structured deliverables (use doc_*_update instead). "
+        "Prefer comment_type=blocker when reporting impediments."
+    ),
+    "comment_list": (
+        "Read recent comments on a project or task. Call at session start before working on a task "
+        "to recover context. Use since to fetch only comments after your last session."
+    ),
+    "doc_project_get": (
+        "Read a project markdown doc. Use doc_type=spec at planning time; progress during work; "
+        "closure when the project finishes. Check exists=false before assuming a doc is written."
+    ),
+    "doc_project_update": (
+        "Write or replace a project markdown doc. spec: set at creation (## Objective, "
+        "## Acceptance Criteria) — write once. progress: session work log. closure: final summary "
+        "(## Summary). Never put progress updates in spec."
+    ),
+    "doc_task_get": (
+        "Read a task markdown doc. Call with doc_type=spec before starting implementation. "
+        "Use progress for current state and closure for delivery summary. Default doc_type is spec."
+    ),
+    "doc_task_update": (
+        "Write or replace a task markdown doc. spec: plan at creation (## Objective, "
+        "## Acceptance Criteria). progress: update each work session with findings and status. "
+        "closure: write before marking completed (## Summary). Do not overwrite spec with progress."
+    ),
+    "project_archive": (
+        "Soft-delete a project when work is done or paused. Preferred over project_delete. "
+        "Requires reason. Restorable via project_restore."
+    ),
+    "project_create": (
+        "Start a new project. Provide a meaningful description (40+ chars) and required "
+        "initial_spec (## Objective, ## Acceptance Criteria). Next: create root tasks with "
+        "task_create, then decompose with parent_id subtasks."
+    ),
+    "project_delete": (
+        "Permanently delete a project and all tasks, docs, and comments. Last resort — prefer "
+        "project_archive. Requires reason."
+    ),
+    "project_get": (
+        "Get one project's metadata, progress stats, and docs_summary. Lighter than project_snapshot; "
+        "use when you only need counts and doc flags. Returns read hints (warnings/next_steps) and "
+        "flags blocked work."
+    ),
+    "project_list": (
+        "First call at session start. Lists projects with optional progress stats. Use to find "
+        "active work before opening a project_snapshot."
+    ),
+    "project_restore": (
+        "Reactivate an archived project when resuming paused work. Next: project_snapshot "
+        "to review task tree and pick up where you left off."
+    ),
+    "project_snapshot": (
+        "Full project view for session-start: progress, docs summary, task tree, recent activity, "
+        "and blocked_tasks with blocker comments. Returns read hints. Optional api_key for agent context."
+    ),
+    "project_update": (
+        "Update project name, description, or status. reason required when changing status "
+        "(recorded as a comment). Use status=completed only when all work is truly done."
+    ),
+    "task_create": (
+        "Add a task or subtask. Decompose large work with parent_id instead of flat lists. "
+        "initial_spec is required for all tasks including subtasks. Use after_task_id to order "
+        "siblings. Next: task_begin_work when starting, or create child subtasks."
+    ),
+    "task_delete": (
+        "Permanently delete a task and its subtasks. Prefer task_update status=cancelled when "
+        "work is no longer needed. Requires reason."
+    ),
+    "task_get": (
+        "Get one task with docs_summary (incl. needs_update/is_stale flags), subtask_stats, parent, "
+        "created_by, and last 5 recent_comments inline. Optional api_key sets is_yours. "
+        "Returns read hints with suggested next actions."
+    ),
+    "task_list": (
+        "List tasks in a project with optional status or parent filter. Includes doc flags and "
+        "subtask stats by default. Optional api_key sets is_yours per task. Returns read hints. "
+        "For full hierarchy prefer task_subtree or project_snapshot."
+    ),
+    "task_move": (
+        "Reorder or reparent a task. Use after_task_id to insert between siblings; parent_id "
+        "(empty string for root) to move in the tree. Use when plan structure changes mid-project."
+    ),
+    "task_subtree": (
+        "Get the full nested task tree for a project. Use at session start to see structure and "
+        "status distribution. project_snapshot includes this plus docs and activity."
+    ),
+    "task_tree": (
+        "Get one task and all nested descendants. Use to inspect a subtree before working on or "
+        "completing a parent task."
+    ),
+    "task_update": (
+        "Change task fields or lifecycle status. Starting work: status=in_progress (requires spec). "
+        "Blocked: status=blocked + blocker_reason. Failed: status=failed + failure_reason. "
+        "Done: closure doc or closure_note, then status=completed (blocked if active subtasks remain). "
+        "No longer needed: status=cancelled. Prefer task_begin_work, task_record_progress, "
+        "and task_complete for the standard workflow."
+    ),
+    "session_context": (
+        "Session-start tool scoped to one project. Without project_id: returns project list. "
+        "With project_id: returns available_tasks (all in_progress/pending with descriptions). "
+        "Optional api_key sets is_yours on tasks you most recently started. Add task_id to "
+        "focus on your task. Multiple agents each pick different tasks from available_tasks."
+    ),
+    "task_begin_work": (
+        "Start working on a task in one call: returns spec, recent comments, checklist, and sets "
+        "status=in_progress if pending. Requires a spec doc — fails if missing. Call after "
+        "session_context for your chosen project. Read-only on blocked/completed tasks."
+    ),
+    "task_record_progress": (
+        "Record session progress in one call: upserts progress doc and optionally adds a timeline "
+        "comment. Use during work instead of separate doc_task_update + comment_add calls."
+    ),
+    "task_complete": (
+        "Finish a task in one call: writes closure doc (closure markdown or closure_note) and marks "
+        "completed. Blocks if active subtasks remain. Prefer over doc_task_update + task_update."
+    ),
+}
+
+# Enriched property descriptions for high-impact schema fields.
+DOC_TYPE_PROP = {
+    "type": "string",
+    "enum": ["spec", "progress", "closure"],
+    "description": (
+        "spec: plan (write once). progress: work log (update during sessions). "
+        "closure: delivery summary (write before completing). Default: spec."
+    ),
+}
+
+STATUS_TASK_PROP = {
+    "type": "string",
+    "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
+    "description": (
+        "pending=not started; in_progress=active work; blocked=waiting (needs blocker_reason); "
+        "completed=done (needs closure doc/note); failed=attempted unsuccessfully; cancelled=not needed."
+    ),
+}

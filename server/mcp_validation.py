@@ -1,8 +1,9 @@
-"""Validation helpers for MCP tool contracts."""
+"""Validation helpers for MCP tool contracts — strict enforcement only."""
 
-import os
 import re
-from typing import Optional
+from typing import Any, Optional
+
+from db import get_task_subtask_stats
 
 MIN_NAME_LEN = 3
 MIN_DESCRIPTION_LEN = 40
@@ -12,15 +13,20 @@ MIN_SPEC_LEN = 80
 MIN_PROGRESS_LEN = 50
 MIN_CLOSURE_LEN = 80
 
-STRICT = os.environ.get("TM_STRICT", "").lower() in ("1", "true", "yes")
-
 
 class ValidationError(Exception):
-    def __init__(self, message: str, field: Optional[str] = None, code: str = "VALIDATION_ERROR"):
+    def __init__(
+        self,
+        message: str,
+        field: Optional[str] = None,
+        code: str = "VALIDATION_ERROR",
+        remediation: Optional[list[str]] = None,
+    ):
         super().__init__(message)
         self.message = message
         self.field = field
         self.code = code
+        self.remediation = remediation or []
 
 
 def _trim(value: str) -> str:
@@ -38,19 +44,50 @@ def require_text(value: str, field: str, min_len: int, label: Optional[str] = No
     return text
 
 
+def _spec_remediation(entity: str, entity_id: str) -> list[str]:
+    tool = "doc_task_update" if entity == "task" else "doc_project_update"
+    key = "task_id" if entity == "task" else "project_id"
+    return [
+        f"{tool} {key}={entity_id} doc_type=spec with ## Objective and ## Acceptance Criteria",
+    ]
+
+
+def _closure_remediation(task_id: str) -> list[str]:
+    return [
+        f"doc_task_update task_id={task_id} doc_type=closure with ## Summary",
+        f"task_update task_id={task_id} status=completed",
+    ]
+
+
+def validate_subtasks_allow_parent_complete(task_id: str) -> None:
+    stats = get_task_subtask_stats(task_id)
+    active = stats.get("subtasks_active", 0)
+    if active > 0:
+        raise ValidationError(
+            f"Cannot complete task with {active} active subtask(s) "
+            f"({stats.get('subtask_count', 0)} total, {stats.get('subtasks_terminal', 0)} terminal).",
+            field="status",
+            code="TRANSITION_BLOCKED",
+            remediation=[
+                "Complete, cancel, or mark failed all subtasks before completing the parent",
+                f"task_tree task_id={task_id} to inspect subtask statuses",
+            ],
+        )
+
+
 def validate_project_create(args: dict) -> dict:
     name = require_text(args.get("name", ""), "name", MIN_NAME_LEN, "Project name")
     description = require_text(
         args.get("description", ""), "description", MIN_DESCRIPTION_LEN, "Project description"
     )
     initial_spec = args.get("initial_spec")
-    if initial_spec:
-        initial_spec = validate_doc_content(initial_spec, "spec", "initial_spec")
-    elif STRICT:
+    if not initial_spec:
         raise ValidationError(
-            "initial_spec is required when TM_STRICT is enabled",
+            "initial_spec is required",
             field="initial_spec",
+            remediation=_spec_remediation("project", "<new-project-id>"),
         )
+    initial_spec = validate_doc_content(initial_spec, "spec", "initial_spec")
     return {"name": name, "description": description, "initial_spec": initial_spec}
 
 
@@ -61,13 +98,13 @@ def validate_task_create(args: dict) -> dict:
     )
     parent_id = args.get("parent_id") or None
     initial_spec = args.get("initial_spec")
-    if initial_spec:
-        initial_spec = validate_doc_content(initial_spec, "spec", "initial_spec")
-    elif STRICT and not parent_id:
+    if not initial_spec:
         raise ValidationError(
-            "initial_spec is required for root tasks when TM_STRICT is enabled",
+            "initial_spec is required for all tasks including subtasks",
             field="initial_spec",
+            remediation=_spec_remediation("task", "<new-task-id>"),
         )
+    initial_spec = validate_doc_content(initial_spec, "spec", "initial_spec")
     return {
         "title": title,
         "description": description,
@@ -114,35 +151,59 @@ def validate_project_update(args: dict, old: Optional[dict]) -> Optional[str]:
     return args.get("reason")
 
 
-def validate_task_update(args: dict, old: dict, has_closure_doc: bool) -> dict:
-    extras: dict = {}
+def validate_task_update(
+    args: dict,
+    old: dict,
+    has_closure_doc: bool,
+    *,
+    has_spec_doc: bool,
+) -> dict[str, Any]:
+    extras: dict[str, Any] = {}
     new_status = args.get("status")
+    task_id = old["id"]
+
     if args.get("title") is not None:
         require_text(args["title"], "title", MIN_NAME_LEN, "Task title")
     if args.get("description") is not None:
         require_text(args["description"], "description", MIN_DESCRIPTION_LEN, "Task description")
 
     if new_status and new_status != old.get("status"):
+        if new_status == "in_progress" and not has_spec_doc:
+            raise ValidationError(
+                "Cannot set status=in_progress without a spec doc",
+                field="status",
+                code="TRANSITION_BLOCKED",
+                remediation=_spec_remediation("task", task_id)
+                + [f"task_update task_id={task_id} status=in_progress"],
+            )
+
         if new_status == "blocked":
             extras["blocker_reason"] = require_text(
                 args.get("blocker_reason", ""), "blocker_reason", MIN_REASON_LEN,
                 "Blocker reason",
             )
+
+        if new_status == "failed":
+            extras["failure_reason"] = require_text(
+                args.get("failure_reason", ""), "failure_reason", MIN_REASON_LEN,
+                "Failure reason",
+            )
+
         if new_status == "completed":
-            closure_note = args.get("closure_note")
-            if not has_closure_doc:
-                if not closure_note and not STRICT:
-                    pass  # warn only in non-strict
-                else:
-                    extras["closure_note"] = require_text(
-                        closure_note or "", "closure_note", MIN_REASON_LEN,
-                        "Closure note (required when no closure doc exists)",
-                    ) if not has_closure_doc else None
-            if STRICT and not has_closure_doc and not args.get("closure_note"):
+            validate_subtasks_allow_parent_complete(task_id)
+            if not has_closure_doc and not args.get("closure_note"):
                 raise ValidationError(
-                    "closure_note or an existing closure doc is required to mark completed",
+                    "closure doc or closure_note is required to mark completed",
                     field="closure_note",
+                    code="TRANSITION_BLOCKED",
+                    remediation=_closure_remediation(task_id),
                 )
+            if not has_closure_doc:
+                extras["closure_note"] = require_text(
+                    args.get("closure_note", ""), "closure_note", MIN_REASON_LEN,
+                    "Closure note (required when no closure doc exists)",
+                )
+
     return extras
 
 
@@ -152,3 +213,14 @@ def validate_task_delete(args: dict) -> str:
 
 def validate_comment_content(content: str) -> str:
     return require_text(content, "content", MIN_COMMENT_LEN, "Comment content")
+
+
+def validate_task_has_spec(task_id: str, has_spec_doc: bool) -> None:
+    if not has_spec_doc:
+        raise ValidationError(
+            "Cannot begin work without a spec doc",
+            field="task_id",
+            code="TRANSITION_BLOCKED",
+            remediation=_spec_remediation("task", task_id)
+            + [f"task_begin_work task_id={task_id}"],
+        )
