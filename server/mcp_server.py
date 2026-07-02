@@ -60,6 +60,7 @@ from mcp_enrich import (
     build_project_snapshot,
     list_projects_enriched,
 )
+from mcp_instructions import MCP_INSTRUCTIONS
 from mcp_validation import ValidationError, validate_comment_content, validate_doc_content
 from mcp_validation import (
     validate_project_create,
@@ -74,12 +75,7 @@ from mcp_validation import (
 server = Server(
     "task-manager",
     version="2.0.0",
-    instructions=(
-        "Task Management System for AI Agents. "
-        "Always provide meaningful descriptions when creating projects and tasks. "
-        "Write spec docs with ## Objective and ## Acceptance Criteria. "
-        "Prefer project_archive over project_delete."
-    ),
+    instructions=MCP_INSTRUCTIONS,
 )
 
 logger = logging.getLogger("mcp-server")
