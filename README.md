@@ -1,14 +1,27 @@
 # AI Task Management System
 
-A lightweight task-management platform built for **AI agents and humans**. Track projects, ordered tasks and subtasks, markdown documentation, comments, and a full audit trail — all backed by a single SQLite database.
+**One database. Three interfaces. Zero sync headaches.**
 
-**For AI agents:** connect via **MCP** (recommended) — workflow tools, strict lifecycle validation, read hints, and pinnable reference resources. **For humans:** use the **Web Dashboard** or **CLI** (scripting/debugging). Every interface reads and writes the same data.
+Agents plan and execute over **MCP**. Humans review progress in a **web dashboard**. Scripts and debug sessions use a **stdlib CLI**. Every surface reads and writes the same SQLite file — so your agent can break work into subtasks while you watch the tree update in the browser, in real time.
+
+Built for teams where AI agents do the work and humans stay in the loop.
+
+---
+
+## Pick your path
+
+| You are… | Start here | Why |
+|----------|------------|-----|
+| **An AI agent** (Cursor, Claude Desktop, remote worker) | [Quick Start — MCP](#quick-start--mcp-agents) | Workflow tools, strict lifecycle validation, read hints, pinnable playbooks |
+| **A human reviewer** | [Quick Start — Dashboard](#quick-start--web-dashboard) | Task trees, docs hub, audit trail, agent management |
+| **A scripter / debugger** | [Quick Start — CLI](#quick-start--cli-fallback) | Pure stdlib, JSON everywhere, no server process |
+| **Running headless agents at scale** | [Task Orchestrator SDK](#task-orchestrator-sdk) | Walk subtask trees one step at a time via Cursor CLI |
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
+- [Why this exists](#why-this-exists)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Quick Start — MCP (agents)](#quick-start--mcp-agents)
@@ -27,27 +40,30 @@ A lightweight task-management platform built for **AI agents and humans**. Track
 
 ---
 
-## Overview
+## Why this exists
 
-| Interface | Best for | Server required |
-|-----------|----------|-----------------|
-| **MCP** | Cursor, Claude Desktop, remote agents (**preferred for agents**) | Yes |
-| **Dashboard** | Humans reviewing progress, docs, and audit | Yes |
-| **CLI** | Local scripting, debugging, automation without MCP | No |
+Most task trackers treat agents as afterthoughts — a REST API bolted on, no lifecycle guardrails, no structured docs, no audit trail of *who* changed *what*.
 
-All interfaces share one database (`server/task_manager.db`). An agent can plan over MCP while a human reviews the same project in the browser — no sync step.
+This system flips that:
+
+- **Agents get a first-class MCP server** with workflow tools (`session_context` → `task_begin_work` → `task_record_progress` → `task_complete`), validation that catches sloppy handoffs, and remediation hints when something's wrong.
+- **Humans get a dashboard** that renders the same task trees, markdown docs, and audit log — no export/import dance.
+- **Everyone shares one SQLite database** (`server/task_manager.db`). Lightweight, portable, inspectable.
+
+The result: structured agent work that humans can actually trust and review.
 
 ---
 
 ## Features
 
-### Core
+### Core data model
 
 - **Projects** — Create, update, archive, restore, and track completion progress
-- **Ordered tasks** — Root tasks and nested subtasks with fractional-index ordering
+- **Ordered task trees** — Root tasks and nested subtasks with fractional-index ordering
 - **Six task statuses** — `pending`, `in_progress`, `completed`, `blocked`, `failed`, `cancelled`
-- **Markdown docs** — Three doc types per project and task: `spec`, `progress`, `closure`
+- **Three markdown doc slots** — `spec`, `progress`, and `closure` on every project and task
 - **Comments** — Timestamped, append-only notes on projects and tasks
+- **Audit log** — Field-level mutation history with agent name and master
 
 ### MCP agent experience
 
@@ -59,20 +75,20 @@ All interfaces share one database (`server/task_manager.db`). An agent can plan 
 - **Multi-agent** — `is_yours` on shared projects via optional `api_key` on read tools
 - **Server instructions** — Playbook injected at MCP connect time
 
-### Agent & governance
+### Web dashboard
+
+- **Home** — Create projects, search and filter (active / archived / all), recent activity feed, onboarded agents
+- **Project view** — Collapsible task tree, live search, status filter chips
+- **Task detail** — Breadcrumb navigation, inline docs, HTMX-powered comments, status updates
+- **Documentation hub** — Read-only view of all project and task docs, grouped by task tree
+- **Doc editor** — Write markdown with a live preview (marked.js + DOMPurify); views render server-side (Python markdown + bleach)
+- **Audit pages** — Per-project and per-agent activity history with pagination
+- **Admin** — Agent onboarding, key reissue, password change
+
+### Agent governance
 
 - **Agent onboarding** — Register agents with API keys (audit identity on every mutation)
-- **Audit log** — Field-level mutation history with agent name and master
 - **Portable skill** — Drop-in `skill/task-management/` for Cursor and other runtimes (MCP-first)
-
-### Web Dashboard
-
-- **Home** — Project grid, search and filters, recent activity feed, onboarded agents
-- **Project view** — Task tree with collapsible subtasks, search, and status filters
-- **Documentation hub** — Read-only view of all project and task docs, grouped by task tree
-- **Markdown rendering** — Client-side preview via marked.js with sanitized HTML
-- **Audit pages** — Per-project and per-agent activity history
-- **Archive** — Soft-delete projects (restore anytime)
 
 ---
 
@@ -83,7 +99,7 @@ flowchart TB
     subgraph clients [Clients]
         MCP["MCP Server\nmcp_server.py\n29 tools + 4 resources"]
         WEB["Web Dashboard\nFastAPI :8000"]
-        CLI["CLI\ncli.py\nfallback"]
+        CLI["CLI\ncli.py\nstdlib, no server"]
     end
 
     subgraph data [Data Layer]
@@ -122,15 +138,15 @@ session_context → task_begin_work → task_record_progress → task_complete
 
 ```bash
 cd server
-pip install -r requirements.txt
-python cli.py db init   # first run only — creates task_manager.db
+python3 -m pip install -r requirements.txt
+python3 cli.py db init   # first run only — creates task_manager.db
 ```
 
 ### 2. Onboard and persist your API key
 
 ```bash
 # One-time — or use MCP tool agent_onboard from the IDE
-python cli.py agent onboard --name my-agent --master "Your Name"
+python3 cli.py agent onboard --name my-agent --master "Your Name"
 ```
 
 Save the returned `api_key` **outside the repo**, e.g. `~/.config/task-manager/credentials.json`. Wire it into your MCP client env so context resets do not lose auth:
@@ -156,13 +172,13 @@ See [skill/task-management/SKILL.md](skill/task-management/SKILL.md) for full ke
 **Stdio** (Cursor, Claude Desktop — subprocess):
 
 ```bash
-python mcp_server.py
+python3 mcp_server.py
 ```
 
 **HTTP/SSE** (remote agents):
 
 ```bash
-python mcp_server.py --http --port 8000
+python3 mcp_server.py --http --port 8000
 ```
 
 | Endpoint | Purpose |
@@ -182,7 +198,7 @@ Attach these read-only resources in your MCP host for stable session context:
 | `taskmgr://templates/progress` | Progress doc skeleton |
 | `taskmgr://templates/closure` | Closure doc skeleton |
 
-### 5. Session workflow
+### 5. Run your first session
 
 ```
 1. session_context                          → list projects
@@ -198,7 +214,7 @@ Test with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 npx @modelcontextprotocol/inspector http://localhost:8000/sse
 ```
 
-> **Port conflict:** MCP HTTP and the dashboard both default to port `8000`. Run one on another port, e.g. `python mcp_server.py --http --port 8001` or `uvicorn dashboard.app:app --port 8080`.
+> **Port conflict:** MCP HTTP and the dashboard both default to port `8000`. Run one on another port, e.g. `python3 mcp_server.py --http --port 8001` or `uvicorn dashboard.app:app --port 8080`.
 
 ---
 
@@ -206,8 +222,8 @@ npx @modelcontextprotocol/inspector http://localhost:8000/sse
 
 ```bash
 cd server
-pip install -r requirements.txt
-python dashboard/app.py
+python3 -m pip install -r requirements.txt
+python3 dashboard/app.py
 ```
 
 Open **http://localhost:8000** and sign in:
@@ -223,12 +239,14 @@ Change the password under **Settings** after first login.
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Home | `/` | Projects, activity feed, agents |
-| Project | `/projects/{id}` | Tasks, progress, comments |
+| Home | `/` | Create projects, search/filter grid, activity feed, agents |
+| Project | `/projects/{id}` | Task tree with search and status filters |
+| Task detail | `/tasks/{id}` | Breadcrumbs, docs, comments, status updates |
 | All docs | `/projects/{id}/docs` | Read-only hub for spec / progress / closure |
-| Doc editor | `/projects/{id}/doc` | View or edit a single doc |
+| Doc editor | `/projects/{id}/doc` or `/tasks/{id}/doc` | View or edit a single doc |
 | Audit log | `/projects/{id}/audit` | Project and task mutation history |
 | Agents | `/admin/agents` | Onboarded agents; reissue keys |
+| Settings | `/admin/settings` | Change admin password |
 
 ---
 
@@ -238,13 +256,13 @@ Pure Python stdlib — no server process. Useful for **humans**, **debugging**, 
 
 ```bash
 cd server
-python cli.py db init
+python3 cli.py db init
 
 export TM_API_KEY="tm_..."   # required for mutations
 
-python cli.py project create "Build Auth System" --desc "JWT-based authentication (40+ chars)"
-python cli.py task create <PROJECT_ID> "Research options" --desc "..."
-python cli.py project list --pretty
+python3 cli.py project create "Build Auth System" --desc "JWT-based authentication (40+ chars)"
+python3 cli.py task create <PROJECT_ID> "Research options" --desc "..."
+python3 cli.py project list --pretty
 ```
 
 Every command emits **JSON** to stdout. Pass `--pretty` for formatted output.
@@ -331,22 +349,24 @@ Validation errors return `remediation` steps. Prefer workflow tools over manual 
 ## Project Structure
 
 ```
-my-agent-project/
+ai-task-management/
 ├── Dockerfile
 ├── README.md
+├── AGENTS.md                   # Notes for Cursor Cloud agents
 ├── server/
 │   ├── schema.sql
 │   ├── db.py
-│   ├── cli.py
+│   ├── cli.py                  # Stdlib CLI (JSON output)
 │   ├── mcp_server.py           # MCP server (stdio + HTTP/SSE)
 │   ├── mcp_instructions.py     # Server instructions at connect
 │   ├── mcp_resources.py        # Static playbook + templates
-│   ├── mcp_validation.py       # Strict lifecycle validation
+│   ├── mcp_validation.py      # Strict lifecycle validation
 │   ├── mcp_workflows.py        # session_context, task_begin_work, …
 │   ├── mcp_tool_descriptions.py
 │   ├── mcp_read_hints.py / mcp_response_hints.py / mcp_enrich.py
+│   ├── migrate_project_mcp.py  # Push a local project to remote MCP
 │   ├── requirements.txt
-│   ├── dashboard/
+│   ├── dashboard/              # FastAPI + Jinja2 + Tailwind
 │   └── tests/                  # pytest (db, cli, mcp_*, dashboard)
 ├── sdk/
 │   └── task_orchestrator/      # Sequential subtask orchestrator
@@ -400,8 +420,8 @@ Full parameters and setup: [skill/task-management/references/reference.md](skill
 | **Agents** | `agent onboard` · `list` · `audit` · `audit-log` |
 
 ```bash
-python cli.py --help
-python cli.py task create --help
+python3 cli.py --help
+python3 cli.py task create --help
 ```
 
 ---
@@ -424,15 +444,22 @@ cp -r skill/task-management/ ~/.cursor/skills/task-management/
 
 ## Task Orchestrator SDK
 
-Run a headless agent **one subtask at a time** for large task trees. Each invocation fetches context from TM via MCP.
+Run a headless agent **one subtask at a time** for large task trees. Each invocation passes only a task ID — the agent fetches context from TM via MCP.
 
 ```bash
-cd sdk && pip install -e .
+cd sdk && python3 -m pip install -e .
+
+# Preview the work plan
 task-orchestrator plan --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --pretty
+
+# Dry run — writes prompts to .tm-runs/ without calling the agent
 task-orchestrator run --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --dry-run
+
+# Full run
+task-orchestrator run --task <ROOT_TASK_ID> --config examples/orchestrator.yaml --pretty
 ```
 
-See [sdk/README.md](sdk/README.md).
+Traversal modes (`depth_first`, `direct_children`, `flatten`), failure policies (`stop`, `pause`, `continue`), and run logs under `.tm-runs/` — see [sdk/README.md](sdk/README.md).
 
 ---
 
@@ -440,22 +467,33 @@ See [sdk/README.md](sdk/README.md).
 
 ```bash
 cd server
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 
 # Initialize real DB once (CLI subprocess tests use it)
-python cli.py db init
+python3 cli.py db init
 
 # Run tests (isolated test DB for most suites)
-python -m pytest
+python3 -m pytest
 
 # MCP tests only
-python -m pytest tests/test_mcp_*.py -q
+python3 -m pytest tests/test_mcp_*.py -q
 
 # Dashboard with reload (use port 8080 if MCP HTTP is on 8000)
 uvicorn dashboard.app:app --reload --port 8080 --app-dir .
+
+# Rebuild dashboard CSS after editing Tailwind sources
+cd dashboard && npm install && npm run build:css
 ```
 
-Tests cover the data layer, CLI, MCP validation/workflows/resources, and dashboard UI.
+**SDK tests:**
+
+```bash
+cd sdk
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests/ -v
+```
+
+Tests cover the data layer, CLI, MCP validation/workflows/resources, and dashboard UI. Set `TM_DB_PATH` to point at a different SQLite file when needed.
 
 ---
 
