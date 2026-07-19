@@ -66,8 +66,9 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # Simple session auth (in-memory)
 # ---------------------------------------------------------------------------
 
-_ADMIN_USERNAME = "admin"
-_ADMIN_PASSWORD_HASH = hashlib.sha256(b"admin").hexdigest()
+_ADMIN_USERNAME = os.environ.get("TM_DASHBOARD_USERNAME", "admin")
+_DEFAULT_PASSWORD = os.environ.get("TM_DASHBOARD_PASSWORD", "admin")
+_ADMIN_PASSWORD_HASH = hashlib.sha256(_DEFAULT_PASSWORD.encode()).hexdigest()
 _SESSION_SECRET = secrets.token_hex(16)
 _sessions: dict[str, str] = {}
 
