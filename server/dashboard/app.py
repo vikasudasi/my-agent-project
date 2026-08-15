@@ -39,6 +39,8 @@ from db import (
     build_project_docs_hub,
     create_project,
     create_task,
+    create_user,
+    create_agent,
     add_comment,
     list_comments,
     list_agents,
@@ -210,7 +212,7 @@ def _pagination_offset(page: int, limit: int) -> int:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    exact_paths = {"/", "/login", "/logout", "/onboarding"}
+    exact_paths = {"/", "/login", "/logout", "/onboarding", "/signup"}
     prefix_paths = {"/static/"}
     path = request.url.path
     if path in exact_paths or any(path.startswith(p) for p in prefix_paths):
@@ -269,6 +271,77 @@ async def logout(request: Request):
     response = RedirectResponse(url="/", status_code=303)
     response.delete_cookie("session")
     return response
+
+
+@app.get("/signup", response_class=HTMLResponse)
+async def signup_page(request: Request, error: str = ""):
+    if _get_session_user(request):
+        return RedirectResponse(url="/dashboard", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "signup.html",
+        {"error": error, "current_user": None},
+    )
+
+
+@app.post("/signup")
+async def signup(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    username: str = Form(""),
+):
+    email = email.strip().lower()
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"error": "Please enter a valid email address.", "current_user": None},
+        )
+    if len(password) < 8:
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"error": "Password must be at least 8 characters.", "current_user": None},
+        )
+    # Reject duplicate email (case-insensitive).
+    with get_connection() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if existing:
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"error": "An account with this email already exists. Try logging in instead.", "current_user": None},
+        )
+    # Derive a unique username from the email local-part (or provided value).
+    base_username = (username.strip() or email.split("@")[0]).strip()
+    if not base_username:
+        base_username = "user"
+    uname = base_username
+    suffix = 1
+    with get_connection() as conn:
+        while conn.execute("SELECT id FROM users WHERE username = ?", (uname,)).fetchone():
+            uname = f"{base_username}{suffix}"
+            suffix += 1
+    user = create_user(uname, email, password)
+    if not user:
+        return templates.TemplateResponse(
+            request,
+            "signup.html",
+            {"error": "Could not create the account. Please try again.", "current_user": None},
+        )
+    # Auto-create the first agent so the user can authenticate immediately.
+    first_agent = create_agent(user["id"], uname)
+    if not first_agent:
+        for i in range(1, 100):
+            first_agent = create_agent(user["id"], f"{uname}-{i}")
+            if first_agent:
+                break
+    # Auto-login and send them to the dashboard.
+    token = _create_session(user)
+    redirect = RedirectResponse(url="/dashboard", status_code=303)
+    redirect.set_cookie(key="session", value=token, httponly=True, max_age=86400 * 7)
+    return redirect
 
 
 # ---------------------------------------------------------------------------

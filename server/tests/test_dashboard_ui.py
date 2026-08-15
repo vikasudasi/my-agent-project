@@ -164,6 +164,33 @@ class TestAuth:
         assert 'name="email"' in r.text
         assert 'name="password"' in r.text
 
+    def test_signup_page_renders(self, client):
+        r = client.get("/signup")
+        assert r.status_code == 200
+        assert "/static/css/app.css" in r.text
+        assert 'name="email"' in r.text
+        assert 'name="password"' in r.text
+        assert "Create your account" in r.text
+
+    def test_signup_creates_user_and_auto_login(self, client):
+        email = f"signup_{uuid.uuid4().hex[:12]}@example.com"
+        r = client.post(
+            "/signup",
+            data={"email": email, "password": "testpass123", "username": ""},
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/dashboard"
+        assert r.cookies.get("session")
+
+    def test_signup_rejects_short_password(self, client):
+        email = f"signup_{uuid.uuid4().hex[:12]}@example.com"
+        r = client.post(
+            "/signup",
+            data={"email": email, "password": "short", "username": ""},
+        )
+        assert r.status_code == 200
+        assert "at least 8 characters" in r.text
+
     def test_protected_dashboard_redirects(self, client):
         r = client.get("/dashboard")
         assert r.status_code == 303
