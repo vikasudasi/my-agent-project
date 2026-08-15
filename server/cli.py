@@ -131,7 +131,8 @@ def cmd_db_path(_args):
 # ---- User commands ----
 
 def cmd_user_signup(args):
-    """Create a new user. Username defaults to email local part if omitted."""
+    """Create a new user and auto-create a first agent for immediate auth.
+    Username defaults to email local part if omitted."""
     if not args.password:
         err("Password is required")
     username = args.username or (
@@ -142,7 +143,21 @@ def cmd_user_signup(args):
     result = create_user(username, email=args.email, password=args.password)
     if not result:
         err(f"Username '{username}' already exists")
-    out(result, pretty=args.pretty)
+    # Auto-create the first agent so the user can authenticate immediately.
+    agent_name = args.agent_name or username
+    agent = create_agent(result["id"], agent_name)
+    if not agent:
+        err("User created but first-agent auto-create failed (name collision)")
+    out({
+        "user": result,
+        "first_agent": {
+            "id": agent["id"],
+            "name": agent["name"],
+            "master_name": agent.get("master_name"),
+            "created_at": agent.get("created_at"),
+        },
+        "api_key": agent["api_key"],
+    }, pretty=args.pretty)
 
 
 def cmd_user_login(args):
@@ -508,6 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
     u_signup.add_argument("--email", required=True, help="Email address")
     u_signup.add_argument("--password", required=True, help="Password")
     u_signup.add_argument("--username", help="Username (defaults to email local part)")
+    u_signup.add_argument("--agent-name", help="Name for the auto-created first agent (defaults to username)")
 
     u_login = user_sub.add_parser("login", parents=[parent],
                                    help="Validate user credentials by email + password")

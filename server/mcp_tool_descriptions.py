@@ -1,12 +1,30 @@
 """Workflow-oriented MCP tool descriptions injected at list_tools time."""
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "agent_onboard": (
-        "Register this agent before any mutations. Returns api_key once — save it immediately "
-        "and pass it on all mutation tools (or set TM_API_KEY). Call once per agent identity."
+    "agent_create": (
+        "Create an additional agent for the currently authenticated user. Returns agent info + "
+        "api_key (shown once). user_signup already auto-creates your first agent — use this "
+        "only for extra agents."
     ),
     "agent_list": (
         "List registered agents. Use to verify onboarding or see who has access. Requires auth."
+    ),
+    "agent_list_my": (
+        "List all agents owned by the currently authenticated user. Returns an empty list if no "
+        "auth is provided."
+    ),
+    "agent_reissue": (
+        "Reissue the API key for an agent owned by the authenticated user. The old key is "
+        "invalidated immediately — save the new key."
+    ),
+    "user_login": (
+        "Authenticate a user by email and password. Returns the user record on success — use this "
+        "to verify credentials before creating agents."
+    ),
+    "user_signup": (
+        "Create a new user account and auto-create a first agent for immediate authentication. "
+        "Derives a username from your email. Returns user record, first agent, and api_key "
+        "(shown once — save it immediately). The api_key authenticates you for all future calls."
     ),
     "audit_log_get": (
         "Read mutation history for a project or task. Use at session start to see what changed "

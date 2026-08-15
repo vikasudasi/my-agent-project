@@ -677,7 +677,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="user_signup",
-            description="Create a new user account. Derives a username from your email. Returns the user record. Then call agent_create to onboard an agent.",
+            description="Create a new user account and auto-create a first agent for immediate authentication. Derives a username from your email. Returns user record, first agent, and api_key (shown once — save it immediately). The api_key authenticates you for all future calls.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -689,6 +689,11 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "minLength": 8,
                         "description": "Password (min 8 characters, bcrypt-hashed)",
+                    },
+                    "agent_name": {
+                        "type": "string",
+                        "minLength": 3,
+                        "description": "Optional name for the auto-created first agent. Defaults to your username.",
                     },
                 },
                 "required": ["email", "password"],
@@ -708,7 +713,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="agent_create",
-            description="Create a new agent for the currently authenticated user. Returns agent info + api_key (shown once). Requires auth — call user_signup first if you don't have an account.",
+            description="Create an additional agent for the currently authenticated user. Returns agent info + api_key (shown once). user_signup already auto-creates your first agent — use this only for extra agents.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1261,7 +1266,43 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                     f"Could not create user '{username}'.",
                     code="SV_CONFLICT",
                 )
-            return _ok_mutation(user, name, arguments=arguments)
+            # Auto-create the first agent so the user can authenticate immediately.
+            requested_name = (arguments.get("agent_name") or "").strip()
+            agent_name = requested_name or username
+            first_agent = create_agent(user["id"], agent_name)
+            if not first_agent:
+                # Name collision — fall back to numbered variants.
+                base = agent_name or username
+                for i in range(1, 100):
+                    first_agent = create_agent(user["id"], f"{base}-{i}")
+                    if first_agent:
+                        break
+            if not first_agent:
+                return _err(
+                    "User created, but auto-creating the first agent failed.",
+                    code="INTERNAL",
+                )
+            return _ok(
+                {
+                    "user": {
+                        "id": user["id"],
+                        "username": user["username"],
+                        "email": user["email"],
+                        "role": user["role"],
+                        "created_at": user["created_at"],
+                    },
+                    "first_agent": {
+                        "id": first_agent["id"],
+                        "name": first_agent["name"],
+                        "master_name": first_agent["master_name"],
+                        "role": first_agent.get("role", "agent"),
+                        "created_at": first_agent.get("created_at"),
+                    },
+                    "api_key": first_agent["api_key"],
+                },
+                tool=name,
+                warnings=["Save the api_key now — it will not be shown again."],
+            )
 
         elif name == "user_login":
             email = arguments["email"].strip().lower()

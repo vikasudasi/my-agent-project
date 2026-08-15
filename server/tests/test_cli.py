@@ -42,22 +42,26 @@ def _run_auth(*args: str) -> subprocess.CompletedProcess:
 
 @pytest.fixture(scope="session", autouse=True)
 def _find_cli():
-    """Find the path to cli.py and create a test agent for mutation tests."""
+    """Find the path to cli.py and create a test user + agent for mutation tests."""
     import os
     global CLI_PATH
     CLI_PATH = os.path.join(os.path.dirname(__file__), "..", "cli.py")
 
-    # Onboard a unique agent per session (onboard doesn't require auth)
+    # Create a unique user + agent per session via the DB layer (the CLI has no
+    # unauthenticated agent bootstrap — agent create requires an existing key).
+    import db as db_module
     global _PYTEST_API_KEY
     import time
-    agent_name = f"pytest-agent-{int(time.time())}"
-    result = _run("agent", "onboard", "--name", agent_name, "--master", "Test")
-    if result.returncode == 0:
-        import json
-        _PYTEST_API_KEY = json.loads(result.stdout)["api_key"]
-    else:
-        # Fallback: try env var
-        _PYTEST_API_KEY = os.environ.get("TM_API_KEY", "")
+    unique = int(time.time()) % 1000000
+    user = db_module.create_user(
+        f"pytest-user-{unique}",
+        email=f"pytest-user-{unique}@test.com",
+        password="somepass123",
+    )
+    assert user is not None, "Failed to create pytest user"
+    agent = db_module.create_agent(user["id"], f"pytest-agent-{unique}", "Test")
+    assert agent is not None, "Failed to create pytest agent"
+    _PYTEST_API_KEY = agent["api_key"]
 
 
 @pytest.fixture
@@ -93,12 +97,12 @@ class TestJsonOutput:
         _run_auth("project", "delete", data["id"])
 
     def test_project_list_output(self):
-        result = _run("project", "list")
+        result = _run_auth("project", "list")
         data = json.loads(result.stdout)
         assert isinstance(data, list)
 
     def test_project_get_output(self, project_id):
-        result = _run("project", "get", project_id)
+        result = _run_auth("project", "get", project_id)
         data = json.loads(result.stdout)
         assert data["id"] == project_id
         assert "total_tasks" in data
@@ -125,14 +129,14 @@ class TestJsonOutput:
         assert data["status"] == "pending"
 
     def test_task_list_output(self, project_id, task_id):
-        result = _run("task", "list", project_id)
+        result = _run_auth("task", "list", project_id)
         data = json.loads(result.stdout)
         assert isinstance(data, list)
         ids = [t["id"] for t in data]
         assert task_id in ids
 
     def test_task_get_output(self, task_id):
-        result = _run("task", "get", task_id)
+        result = _run_auth("task", "get", task_id)
         data = json.loads(result.stdout)
         assert data["id"] == task_id
 
@@ -150,7 +154,7 @@ class TestJsonOutput:
         assert data["deleted"] is True
 
     def test_doc_project_get_output(self, project_id):
-        result = _run("doc", "project", "get", project_id)
+        result = _run_auth("doc", "project", "get", project_id)
         data = json.loads(result.stdout)
         assert data["project_id"] == project_id
         assert "content" in data
@@ -161,7 +165,7 @@ class TestJsonOutput:
         assert data["updated"] is True
 
     def test_doc_task_get_output(self, task_id):
-        result = _run("doc", "task", "get", task_id)
+        result = _run_auth("doc", "task", "get", task_id)
         data = json.loads(result.stdout)
         assert data["task_id"] == task_id
 
@@ -177,7 +181,7 @@ class TestJsonOutput:
 
     def test_pretty_flag(self, project_id):
         """--pretty should produce valid, indented JSON."""
-        result = _run("project", "get", project_id, "--pretty")
+        result = _run_auth("project", "get", project_id, "--pretty")
         data = json.loads(result.stdout)
         assert data["id"] == project_id
         assert "\n" in result.stdout

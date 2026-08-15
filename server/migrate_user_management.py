@@ -95,19 +95,31 @@ def main() -> int:
 
         # 2. Add user_id columns (idempotent)
         if not _has_column(conn, "agents", "user_id"):
-            conn.execute("ALTER TABLE agents ADD COLUMN user_id TEXT REFERENCES users(id)")
+            try:
+                conn.execute("ALTER TABLE agents ADD COLUMN user_id TEXT REFERENCES users(id)")
+            except sqlite3.OperationalError as e:
+                if "duplicate" not in str(e).lower():
+                    raise
             print("Added agents.user_id column.")
         else:
             print("agents.user_id already present.")
 
         if not _has_column(conn, "projects", "user_id"):
-            conn.execute("ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            try:
+                conn.execute("ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as e:
+                if "duplicate" not in str(e).lower():
+                    raise
             print("Added projects.user_id column (NOT NULL DEFAULT '').")
         else:
             print("projects.user_id already present.")
 
         if not _has_column(conn, "agent_audit_log", "user_id"):
-            conn.execute("ALTER TABLE agent_audit_log ADD COLUMN user_id TEXT")
+            try:
+                conn.execute("ALTER TABLE agent_audit_log ADD COLUMN user_id TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate" not in str(e).lower():
+                    raise
             print("Added agent_audit_log.user_id column.")
         else:
             print("agent_audit_log.user_id already present.")

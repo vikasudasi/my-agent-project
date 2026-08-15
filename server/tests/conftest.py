@@ -22,6 +22,7 @@ TEST_DB_PATH = os.path.join(DB_DIR, "task_manager_test.db")
 # Monkey-patch DB_PATH before any db functions are called
 import db as db_module
 db_module.DB_PATH = TEST_DB_PATH
+os.environ["TM_DB_PATH"] = TEST_DB_PATH  # Subprocesses (CLI) inherit this
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,9 @@ def subtask(task):
 
 @pytest.fixture(scope="session")
 def api_key() -> str:
-    """Create a test agent and return its API key for use in CLI tests."""
-    agent = db_module.onboard_agent("test-agent", "Test Master")
-    assert agent is not None, "Failed to onboard test agent"
+    """Create a test user + agent and return the API key."""
+    user = db_module.create_user("test-user", email="test@test.com", password="testpass123")
+    assert user is not None, "Failed to create test user"
+    agent = db_module.create_agent(user["id"], "test-agent", "Test Master")
+    assert agent is not None, "Failed to create test agent"
     return agent["api_key"]

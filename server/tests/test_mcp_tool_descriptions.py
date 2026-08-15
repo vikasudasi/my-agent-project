@@ -7,8 +7,10 @@ from mcp_tool_descriptions import TOOL_DESCRIPTIONS
 
 
 EXPECTED_TOOLS = {
-    "agent_onboard",
+    "agent_create",
     "agent_list",
+    "agent_list_my",
+    "agent_reissue",
     "audit_log_get",
     "comment_add",
     "comment_list",
@@ -36,6 +38,8 @@ EXPECTED_TOOLS = {
     "task_subtree",
     "task_tree",
     "task_update",
+    "user_login",
+    "user_signup",
 }
 
 

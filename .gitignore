@@ -1,4 +1,5 @@
 # SQLite database
+server/task_manager.db.bak.*
 server/task_manager.db
 server/task_manager.db-shm
 server/task_manager.db-wal
