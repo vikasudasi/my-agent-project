@@ -23,9 +23,11 @@ from mcp_read_hints import (
 )
 
 
-def enrich_project(project: dict, *, for_read: bool = False) -> dict:
+def enrich_project(
+    project: dict, *, for_read: bool = False, user_id: Optional[str] = None
+) -> dict:
     pid = project["id"]
-    progress = get_project_progress(pid)
+    progress = get_project_progress(pid, user_id=user_id)
     if progress:
         project = {**project, **{
             k: progress[k] for k in (
@@ -44,6 +46,7 @@ def enrich_task(
     for_read: bool = False,
     agent_name: Optional[str] = None,
     comment_limit: int = 0,
+    user_id: Optional[str] = None,
 ) -> dict:
     tid = task["id"]
     summary = get_docs_summary("task", tid)
@@ -58,11 +61,13 @@ def enrich_task(
     if creator:
         task["created_by"] = creator
     if include_parent and task.get("parent_id"):
-        parent = get_task(task["parent_id"])
+        parent = get_task(task["parent_id"], user_id=user_id)
         if parent:
             task["parent"] = {"id": parent["id"], "title": parent["title"]}
     if for_read and comment_limit > 0:
-        task["recent_comments"] = list_comments("task", tid, limit=comment_limit)
+        task["recent_comments"] = list_comments(
+            "task", tid, limit=comment_limit, user_id=user_id
+        )
     if for_read and agent_name:
         task["is_yours"] = task_is_yours(tid, agent_name, task["project_id"])
     return task
@@ -73,9 +78,11 @@ def enrich_task_list(
     *,
     for_read: bool = False,
     agent_name: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict]:
     return [
-        enrich_task(t, include_parent=False, for_read=for_read, agent_name=agent_name)
+        enrich_task(t, include_parent=False, for_read=for_read, agent_name=agent_name,
+                    user_id=user_id)
         for t in tasks
     ]
 
@@ -100,8 +107,9 @@ def build_project_snapshot(
     *,
     for_read: bool = False,
     agent_name: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[dict]:
-    progress = get_project_progress(project_id)
+    progress = get_project_progress(project_id, user_id=user_id)
     if not progress:
         return None
     snapshot: dict[str, Any] = {
@@ -109,20 +117,25 @@ def build_project_snapshot(
         "docs_summary": enrich_docs_summary(get_docs_summary("project", project_id))
         if for_read
         else get_docs_summary("project", project_id),
-        "task_tree": get_task_subtree(project_id),
+        "task_tree": get_task_subtree(project_id, user_id=user_id),
     }
     if include_recent_activity:
         entries = get_project_audit_log(project_id, limit=10)
         snapshot["recent_activity"] = entries
     if for_read:
-        snapshot["blocked_tasks"] = build_blocked_tasks_summary(project_id)
+        snapshot["blocked_tasks"] = build_blocked_tasks_summary(
+            project_id, user_id=user_id
+        )
     return snapshot
 
 
 def list_projects_enriched(
-    status: Optional[str] = None, q: Optional[str] = None, include_progress: bool = True
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    include_progress: bool = True,
+    user_id: Optional[str] = None,
 ) -> list[dict]:
-    projects = list_projects(status=status, q=q)
+    projects = list_projects(status=status, q=q, user_id=user_id)
     if not include_progress:
         return projects
-    return [enrich_project(p) for p in projects]
+    return [enrich_project(p, user_id=user_id) for p in projects]

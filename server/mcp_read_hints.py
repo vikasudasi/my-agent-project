@@ -54,14 +54,16 @@ def _flatten_task_tree(nodes: list[dict]) -> list[dict]:
     return flat
 
 
-def build_blocked_tasks_summary(project_id: str) -> list[dict[str, Any]]:
+def build_blocked_tasks_summary(
+    project_id: str, user_id: Optional[str] = None
+) -> list[dict[str, Any]]:
     """Blocked tasks with latest blocker comment for read-path surfacing."""
-    tree = get_task_subtree(project_id)
+    tree = get_task_subtree(project_id, user_id=user_id)
     blocked: list[dict[str, Any]] = []
     for task in _flatten_task_tree(tree):
         if task.get("status") != "blocked":
             continue
-        comments = list_comments("task", task["id"], limit=3)
+        comments = list_comments("task", task["id"], limit=3, user_id=user_id)
         latest_blocker = next(
             (c for c in reversed(comments) if "[blocker]" in c.get("content", "").lower()),
             comments[-1] if comments else None,

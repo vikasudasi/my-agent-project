@@ -5,7 +5,6 @@ Human-readable web UI that reads from the same SQLite database
 as the MCP server. Shows projects, task trees, progress, and docs.
 """
 
-import hashlib
 import os
 import secrets
 import sys
@@ -13,6 +12,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import bcrypt
 from fastapi import FastAPI, Request, Form, HTTPException, Response, Query, Header
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 import uvicorn
 
 from db import (
+    get_connection,
     init_db,
     list_projects_with_progress,
     get_project,
@@ -41,8 +42,9 @@ from db import (
     add_comment,
     list_comments,
     list_agents,
+    list_user_agents,
     get_agent,
-    reissue_api_key,
+    reissue_agent_key,
     log_audit,
     get_audit_log_by_agent_paginated,
     get_project_audit_log_paginated,
@@ -63,39 +65,75 @@ templates.env.filters["markdown"] = render_markdown
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # ---------------------------------------------------------------------------
-# Simple session auth (in-memory)
+# Session auth (in-memory), backed by real users in the database
 # ---------------------------------------------------------------------------
 
-_ADMIN_USERNAME = os.environ.get("TM_DASHBOARD_USERNAME", "admin")
-_DEFAULT_PASSWORD = os.environ.get("TM_DASHBOARD_PASSWORD", "admin")
-_ADMIN_PASSWORD_HASH = hashlib.sha256(_DEFAULT_PASSWORD.encode()).hexdigest()
-_SESSION_SECRET = secrets.token_hex(16)
-_sessions: dict[str, str] = {}
+_sessions: dict[str, dict] = {}
 
 _AUDIT_PAGE_SIZE = 50
 
 
-def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+def _authenticate_user(email: str, password: str) -> Optional[dict]:
+    """Look up a user by email and verify their bcrypt password.
+
+    Returns a public user dict (id, username, email, role, created_at) on
+    success, or None on failure.
+    """
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if not row:
+        return None
+    try:
+        ok = bcrypt.checkpw(password.encode("utf-8"), row["password_hash"].encode("utf-8"))
+    except (ValueError, TypeError):
+        return None
+    if not ok:
+        return None
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "email": row["email"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+    }
 
 
-def _create_session(username: str) -> str:
+def _verify_user_password(user: dict, password: str) -> bool:
+    """Verify ``password`` against the stored bcrypt hash for ``user``."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user["id"],)).fetchone()
+    if not row:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), row["password_hash"].encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def _set_user_password(user_id: str, password: str) -> None:
+    """Replace a user's password with a fresh bcrypt hash."""
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+
+
+def _create_session(user: dict) -> str:
     token = secrets.token_hex(32)
-    _sessions[token] = username
+    _sessions[token] = user
     return token
 
 
-def _get_session_user(request: Request) -> Optional[str]:
+def _get_session_user(request: Request) -> Optional[dict]:
     token = request.cookies.get("session")
     if token and token in _sessions:
         return _sessions[token]
     return None
 
 
-def _require_admin(request: Request):
+def _require_user(request: Request) -> dict:
     user = _get_session_user(request)
     if not user:
-        raise HTTPException(status_code=303, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
 
@@ -114,9 +152,9 @@ def _status_color(status: str) -> str:
     return colors.get(status, "#6b7280")
 
 
-def _dashboard_actor(request: Request) -> tuple[str, str]:
-    user = _get_session_user(request) or "admin"
-    return user, user
+def _dashboard_actor(user: dict) -> tuple[str, str, str]:
+    """Return (agent_name, master_name, user_id) for audit attribution."""
+    return user["username"], user["username"], user["id"]
 
 
 def _format_audit_detail(entry: dict) -> str:
@@ -147,6 +185,7 @@ def _template_context(request: Request, **kwargs) -> dict:
         "format_audit_detail": _format_audit_detail,
         "flash_message": flash_message,
         "flash_type": flash_type,
+        "current_user": _get_session_user(request),
     }
     ctx.update(kwargs)
     return ctx
@@ -201,27 +240,31 @@ async def login_page(request: Request, error: str = ""):
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"error": error},
+        {"error": error, "current_user": None},
     )
 
 
 @app.post("/login")
 async def login(request: Request,
-                username: str = Form(...), password: str = Form(...)):
-    if username == _ADMIN_USERNAME and _hash_password(password) == _ADMIN_PASSWORD_HASH:
-        token = _create_session(username)
-        redirect = RedirectResponse(url="/", status_code=303)
-        redirect.set_cookie(key="session", value=token, httponly=True, max_age=86400 * 7)
-        return redirect
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {"error": "Invalid username or password"},
-    )
+                email: str = Form(...), password: str = Form(...)):
+    user = _authenticate_user(email.strip(), password)
+    if not user:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "Invalid email or password", "current_user": None},
+        )
+    token = _create_session(user)
+    redirect = RedirectResponse(url="/", status_code=303)
+    redirect.set_cookie(key="session", value=token, httponly=True, max_age=86400 * 7)
+    return redirect
 
 
 @app.get("/logout")
-async def logout():
+async def logout(request: Request):
+    token = request.cookies.get("session")
+    if token:
+        _sessions.pop(token, None)
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie("session")
     return response
@@ -237,9 +280,12 @@ async def home(
     q: str = Query(""),
     show: str = Query("active"),
 ):
+    user = _require_user(request)
     status_filter = show if show in ("active", "archived", "all") else "active"
     status = None if status_filter == "all" else status_filter
-    projects = list_projects_with_progress(status=status, q=q.strip() or None)
+    projects = list_projects_with_progress(
+        status=status, q=q.strip() or None, user_id=user["id"]
+    )
 
     return templates.TemplateResponse(
         request,
@@ -247,7 +293,7 @@ async def home(
         _template_context(
             request,
             projects=projects,
-            agents=list_agents(),
+            agents=list_user_agents(user["id"]),
             recent_activity=get_recent_activity(limit=25),
             search_q=q,
             show_filter=status_filter,
@@ -257,43 +303,47 @@ async def home(
 
 @app.post("/projects/create")
 async def project_create(request: Request, name: str = Form(...), description: str = Form("")):
-    result = create_project(name, description)
-    agent, master = _dashboard_actor(request)
-    log_audit(agent, master, "project", result["id"], "created")
+    user = _require_user(request)
+    result = create_project(name, description, user_id=user["id"])
+    agent, master, uid = _dashboard_actor(user)
+    log_audit(agent, master, "project", result["id"], "created", user_id=uid)
     return _flash_redirect("/", f"Project \"{name}\" created.")
 
 
 @app.post("/projects/{project_id}/archive")
 async def project_archive(request: Request, project_id: str):
-    old = get_project(project_id)
-    archive_project(project_id)
+    user = _require_user(request)
+    old = get_project(project_id, user_id=user["id"])
+    archive_project(project_id, user_id=user["id"])
     if old:
-        agent, master = _dashboard_actor(request)
-        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "archived")
+        agent, master, uid = _dashboard_actor(user)
+        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "archived", user_id=uid)
     return _flash_redirect("/", "Project archived.")
 
 
 @app.post("/projects/{project_id}/restore")
 async def project_restore(request: Request, project_id: str):
-    old = get_project(project_id)
-    update_project(project_id, status="active")
+    user = _require_user(request)
+    old = get_project(project_id, user_id=user["id"])
+    update_project(project_id, status="active", user_id=user["id"])
     if old:
-        agent, master = _dashboard_actor(request)
-        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "active")
+        agent, master, uid = _dashboard_actor(user)
+        log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "active", user_id=uid)
     return _flash_redirect(f"/projects/{project_id}", "Project restored.")
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
 async def project_detail(request: Request, project_id: str):
-    project = get_project_progress(project_id)
+    user = _require_user(request)
+    project = get_project_progress(project_id, user_id=user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
 
-    task_tree = get_task_subtree(project_id)
-    doc_spec = get_project_doc(project_id, doc_type="spec")
-    doc_progress = get_project_doc(project_id, doc_type="progress")
-    doc_closure = get_project_doc(project_id, doc_type="closure")
-    comments = list_comments("project", project_id)
+    task_tree = get_task_subtree(project_id, user_id=user["id"])
+    doc_spec = get_project_doc(project_id, doc_type="spec", user_id=user["id"])
+    doc_progress = get_project_doc(project_id, doc_type="progress", user_id=user["id"])
+    doc_closure = get_project_doc(project_id, doc_type="closure", user_id=user["id"])
+    comments = list_comments("project", project_id, user_id=user["id"])
 
     return templates.TemplateResponse(
         request,
@@ -319,15 +369,17 @@ async def task_create_route(
     description: str = Form(""),
     parent_id: str = Form(""),
 ):
+    user = _require_user(request)
     result = create_task(
         project_id,
         title,
         description,
         parent_id=parent_id if parent_id else None,
+        user_id=user["id"],
     )
     if result:
-        agent, master = _dashboard_actor(request)
-        log_audit(agent, master, "task", result["id"], "created")
+        agent, master, uid = _dashboard_actor(user)
+        log_audit(agent, master, "task", result["id"], "created", user_id=uid)
     if parent_id:
         return _flash_redirect(f"/tasks/{parent_id}", f"Subtask \"{title}\" created.")
     return _flash_redirect(f"/projects/{project_id}", f"Task \"{title}\" created.")
@@ -340,13 +392,14 @@ async def task_update_route(
     status: str = Form(...),
     hx_request: Optional[str] = Header(None, alias="HX-Request"),
 ):
-    old = get_task(task_id)
-    result = update_task(task_id, status=status)
+    user = _require_user(request)
+    old = get_task(task_id, user_id=user["id"])
+    result = update_task(task_id, status=status, user_id=user["id"])
     if old and result and old["status"] != status:
-        agent, master = _dashboard_actor(request)
-        log_audit(agent, master, "task", task_id, "updated", "status", old["status"], status)
+        agent, master, uid = _dashboard_actor(user)
+        log_audit(agent, master, "task", task_id, "updated", "status", old["status"], status, user_id=uid)
 
-    task = result or get_task(task_id)
+    task = result or get_task(task_id, user_id=user["id"])
     if not task:
         return _flash_redirect("/", "Task not found.", "error")
 
@@ -365,23 +418,24 @@ async def task_update_route(
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_detail(request: Request, task_id: str):
-    task = get_task(task_id)
+    user = _require_user(request)
+    task = get_task(task_id, user_id=user["id"])
     if not task:
         raise HTTPException(404, "Task not found")
 
-    project = get_project_progress(task["project_id"])
-    full_tree = get_task_subtree(task["project_id"])
-    task_tree = get_task_tree(task_id)
+    project = get_project_progress(task["project_id"], user_id=user["id"])
+    full_tree = get_task_subtree(task["project_id"], user_id=user["id"])
+    task_tree = get_task_tree(task_id, user_id=user["id"])
     subtasks = task_tree["children"] if task_tree else []
-    doc_spec = get_task_doc(task_id, doc_type="spec")
-    doc_progress = get_task_doc(task_id, doc_type="progress")
-    doc_closure = get_task_doc(task_id, doc_type="closure")
-    comments = list_comments("task", task_id)
+    doc_spec = get_task_doc(task_id, doc_type="spec", user_id=user["id"])
+    doc_progress = get_task_doc(task_id, doc_type="progress", user_id=user["id"])
+    doc_closure = get_task_doc(task_id, doc_type="closure", user_id=user["id"])
+    comments = list_comments("task", task_id, user_id=user["id"])
 
     breadcrumb = []
     current = task
     while current and current.get("parent_id"):
-        parent = get_task(current["parent_id"])
+        parent = get_task(current["parent_id"], user_id=user["id"])
         if parent:
             breadcrumb.insert(0, parent)
             current = parent
@@ -417,9 +471,10 @@ async def comment_add_route(
     author: str = Form(""),
     hx_request: Optional[str] = Header(None, alias="HX-Request"),
 ):
-    comment = add_comment(entity_type, entity_id, content, author=author)
-    agent, master = _dashboard_actor(request)
-    log_audit(agent, master, entity_type, entity_id, "comment_added")
+    user = _require_user(request)
+    comment = add_comment(entity_type, entity_id, content, author=author, user_id=user["id"])
+    agent, master, uid = _dashboard_actor(user)
+    log_audit(agent, master, entity_type, entity_id, "comment_added", user_id=uid)
 
     if hx_request and comment:
         return templates.TemplateResponse(
@@ -440,13 +495,14 @@ async def task_doc_page(
     type: str = Query("spec"),
     mode: str = Query("view"),
 ):
+    user = _require_user(request)
     doc_type = type
-    task = get_task(task_id)
+    task = get_task(task_id, user_id=user["id"])
     if not task:
         raise HTTPException(404, "Task not found")
-    doc_meta = get_task_doc_meta(task_id, doc_type=doc_type)
+    doc_meta = get_task_doc_meta(task_id, doc_type=doc_type, user_id=user["id"])
     doc = doc_meta["content"] if doc_meta else ""
-    comments = list_comments("task", task_id)
+    comments = list_comments("task", task_id, user_id=user["id"])
     return templates.TemplateResponse(
         request,
         "doc.html",
@@ -472,12 +528,13 @@ async def task_doc_update(
     content: str = Form(...),
     doc_type: str = Form("spec"),
 ):
-    task = get_task(task_id)
+    user = _require_user(request)
+    task = get_task(task_id, user_id=user["id"])
     if not task:
         raise HTTPException(404, "Task not found")
-    upsert_task_doc(task_id, content, doc_type=doc_type)
-    agent, master = _dashboard_actor(request)
-    log_audit(agent, master, "task", task_id, "updated", f"doc_{doc_type}")
+    upsert_task_doc(task_id, content, doc_type=doc_type, user_id=user["id"])
+    agent, master, uid = _dashboard_actor(user)
+    log_audit(agent, master, "task", task_id, "updated", f"doc_{doc_type}", user_id=uid)
     return _flash_redirect(
         f"/tasks/{task_id}/doc?type={doc_type}",
         f"{doc_type.capitalize()} document saved.",
@@ -491,13 +548,14 @@ async def project_doc_page(
     type: str = Query("spec"),
     mode: str = Query("view"),
 ):
+    user = _require_user(request)
     doc_type = type
-    project = get_project(project_id)
+    project = get_project(project_id, user_id=user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
-    doc_meta = get_project_doc_meta(project_id, doc_type=doc_type)
+    doc_meta = get_project_doc_meta(project_id, doc_type=doc_type, user_id=user["id"])
     doc = doc_meta["content"] if doc_meta else ""
-    comments = list_comments("project", project_id)
+    comments = list_comments("project", project_id, user_id=user["id"])
     return templates.TemplateResponse(
         request,
         "doc.html",
@@ -523,12 +581,13 @@ async def project_doc_update(
     content: str = Form(...),
     doc_type: str = Form("spec"),
 ):
-    project = get_project(project_id)
+    user = _require_user(request)
+    project = get_project(project_id, user_id=user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
-    upsert_project_doc(project_id, content, doc_type=doc_type)
-    agent, master = _dashboard_actor(request)
-    log_audit(agent, master, "project", project_id, "updated", f"doc_{doc_type}")
+    upsert_project_doc(project_id, content, doc_type=doc_type, user_id=user["id"])
+    agent, master, uid = _dashboard_actor(user)
+    log_audit(agent, master, "project", project_id, "updated", f"doc_{doc_type}", user_id=uid)
     return _flash_redirect(
         f"/projects/{project_id}/doc?type={doc_type}",
         f"{doc_type.capitalize()} document saved.",
@@ -541,11 +600,12 @@ async def project_docs_hub(
     project_id: str,
     type: str = Query("spec"),
 ):
+    user = _require_user(request)
     doc_type = type if type in ("spec", "progress", "closure") else "spec"
-    project = get_project(project_id)
+    project = get_project(project_id, user_id=user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
-    hub = build_project_docs_hub(project_id, doc_type=doc_type)
+    hub = build_project_docs_hub(project_id, doc_type=doc_type, user_id=user["id"])
     return templates.TemplateResponse(
         request,
         "project_docs_hub.html",
@@ -564,7 +624,8 @@ async def project_audit_page(
     project_id: str,
     page: int = Query(1),
 ):
-    project = get_project(project_id)
+    user = _require_user(request)
+    project = get_project(project_id, user_id=user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
     page = _pagination_page(page)
@@ -587,7 +648,7 @@ async def project_audit_page(
 
 @app.get("/admin/agents", response_class=HTMLResponse)
 async def admin_agents(request: Request):
-    _require_admin(request)
+    _require_user(request)
     return templates.TemplateResponse(
         request,
         "admin_agents.html",
@@ -601,7 +662,7 @@ async def admin_agent_detail(
     agent_id: str,
     page: int = Query(1),
 ):
-    _require_admin(request)
+    _require_user(request)
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(404, "Agent not found")
@@ -628,11 +689,12 @@ async def admin_agent_detail(
 
 @app.post("/admin/agents/{agent_id}/reissue")
 async def admin_agent_reissue(request: Request, agent_id: str):
-    _require_admin(request)
-    result = reissue_api_key(agent_id)
+    user = _require_user(request)
+    result = reissue_agent_key(agent_id, user_id=user["id"])
     if not result:
         raise HTTPException(404, "Agent not found")
-    log_audit("admin", "admin", "agent", agent_id, "key_reissued")
+    agent, master, uid = _dashboard_actor(user)
+    log_audit(agent, master, "agent", agent_id, "key_reissued", user_id=uid)
     audit_data = get_audit_log_by_agent_paginated(result["name"], limit=_AUDIT_PAGE_SIZE, offset=0)
     return templates.TemplateResponse(
         request,
@@ -651,7 +713,7 @@ async def admin_agent_reissue(request: Request, agent_id: str):
 
 @app.get("/admin/settings", response_class=HTMLResponse)
 async def admin_settings(request: Request, message: str = "", error: str = ""):
-    _require_admin(request)
+    _require_user(request)
     return templates.TemplateResponse(
         request,
         "admin_settings.html",
@@ -666,9 +728,8 @@ async def admin_change_password(
     new_password: str = Form(...),
     confirm_password: str = Form(...),
 ):
-    _require_admin(request)
-    global _ADMIN_PASSWORD_HASH
-    if _hash_password(current_password) != _ADMIN_PASSWORD_HASH:
+    user = _require_user(request)
+    if not _verify_user_password(user, current_password):
         return templates.TemplateResponse(
             request,
             "admin_settings.html",
@@ -686,7 +747,7 @@ async def admin_change_password(
             "admin_settings.html",
             _template_context(request, error="New password must be at least 4 characters"),
         )
-    _ADMIN_PASSWORD_HASH = _hash_password(new_password)
+    _set_user_password(user["id"], new_password)
     return templates.TemplateResponse(
         request,
         "admin_settings.html",

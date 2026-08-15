@@ -73,7 +73,7 @@ def _summarize_task_for_session(task: dict, *, is_yours: Optional[bool] = None) 
 
 
 def list_available_tasks(
-    project_id: str, *, agent_name: Optional[str] = None
+    project_id: str, *, agent_name: Optional[str] = None, user_id: Optional[str] = None
 ) -> list[dict[str, Any]]:
     """All in_progress and pending tasks in tree order — multiple agents pick from this list."""
     yours_ids: set[str] = set()
@@ -82,7 +82,7 @@ def list_available_tasks(
             t["id"] for t in get_agent_resumed_tasks_in_project(agent_name, project_id)
         }
 
-    tree = get_task_subtree(project_id)
+    tree = get_task_subtree(project_id, user_id=user_id)
     flat = _flatten_task_tree(tree)
     available: list[dict[str, Any]] = []
     for status in ("in_progress", "pending"):
@@ -93,16 +93,18 @@ def list_available_tasks(
     return available
 
 
-def _build_focused_task(task_id: str, *, comment_limit: int = 10) -> dict[str, Any]:
-    spec_meta = get_task_doc_meta(task_id, "spec")
+def _build_focused_task(
+    task_id: str, *, comment_limit: int = 10, user_id: Optional[str] = None
+) -> dict[str, Any]:
+    spec_meta = get_task_doc_meta(task_id, "spec", user_id=user_id)
     return {
-        "task": enrich_task(get_task(task_id)),
+        "task": enrich_task(get_task(task_id, user_id=user_id), user_id=user_id),
         "spec": {
             "exists": spec_meta is not None,
             "content": spec_meta["content"] if spec_meta else "",
             "updated_at": spec_meta["updated_at"] if spec_meta else None,
         },
-        "recent_comments": list_comments("task", task_id, limit=comment_limit),
+        "recent_comments": list_comments("task", task_id, limit=comment_limit, user_id=user_id),
     }
 
 
@@ -113,12 +115,15 @@ def run_session_context(
     project_status: str = "active",
     include_snapshot: bool = True,
     agent_name: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Return project picker list, or session context scoped to a selected project/task."""
     status_filter = None if project_status == "all" else project_status
 
     if not project_id:
-        projects = list_projects_enriched(status=status_filter, include_progress=True)
+        projects = list_projects_enriched(
+            status=status_filter, include_progress=True, user_id=user_id
+        )
         checklist = [
             "Choose the project you will work on this session",
             "Call session_context again with that project_id",
@@ -132,7 +137,7 @@ def run_session_context(
             "session_checklist": checklist,
         }
 
-    project = enrich_project_dict(project_id)
+    project = enrich_project_dict(project_id, user_id=user_id)
     if not project:
         raise ValidationError(
             f"Project '{project_id}' not found",
@@ -144,21 +149,23 @@ def run_session_context(
         "mode": "project_session",
         "project_id": project_id,
         "project": project,
-        "available_tasks": list_available_tasks(project_id, agent_name=agent_name),
+        "available_tasks": list_available_tasks(
+            project_id, agent_name=agent_name, user_id=user_id
+        ),
         "session_checklist": list(PROJECT_SESSION_CHECKLIST),
     }
 
     if include_snapshot:
-        snapshot = build_project_snapshot(project_id, for_read=True)
+        snapshot = build_project_snapshot(project_id, for_read=True, user_id=user_id)
         if snapshot:
             result["snapshot"] = snapshot
 
-    blocked = build_blocked_tasks_summary(project_id)
+    blocked = build_blocked_tasks_summary(project_id, user_id=user_id)
     if blocked:
         result["blocked_tasks"] = blocked
 
     if task_id:
-        task = get_task(task_id)
+        task = get_task(task_id, user_id=user_id)
         if not task:
             raise ValidationError(
                 f"Task '{task_id}' not found",
@@ -172,13 +179,15 @@ def run_session_context(
                 field="task_id",
             )
         result["task_id"] = task_id
-        result["focused_task"] = _build_focused_task(task_id)
+        result["focused_task"] = _build_focused_task(task_id, user_id=user_id)
 
     return result
 
 
-def enrich_project_dict(project_id: str) -> Optional[dict[str, Any]]:
-    progress = get_project_progress(project_id)
+def enrich_project_dict(
+    project_id: str, user_id: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    progress = get_project_progress(project_id, user_id=user_id)
     if not progress:
         return None
     return {
@@ -194,8 +203,9 @@ def run_task_begin_work(
     master_name: str,
     comment_limit: int = 10,
     comment_since: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    task = get_task(task_id)
+    task = get_task(task_id, user_id=user_id)
     if not task:
         raise ValidationError(f"Task '{task_id}' not found", code="NOT_FOUND")
 
@@ -210,17 +220,20 @@ def run_task_begin_work(
             field="task_id",
         )
 
-    spec_meta = get_task_doc_meta(task_id, "spec")
+    spec_meta = get_task_doc_meta(task_id, "spec", user_id=user_id)
     validate_task_has_spec(task_id, spec_meta is not None)
 
     if status == "pending":
-        updated = update_task(task_id, status="in_progress")
+        updated = update_task(task_id, status="in_progress", user_id=user_id)
         if updated:
             task = updated
-            log_audit(agent_name, master_name, "task", task_id, "status_changed", "status", "pending", "in_progress")
+            log_audit(agent_name, master_name, "task", task_id, "status_changed", "status",
+                      "pending", "in_progress", user_id=user_id)
 
-    comments = list_comments("task", task_id, limit=comment_limit, since=comment_since)
-    enriched = enrich_task(task)
+    comments = list_comments(
+        "task", task_id, limit=comment_limit, since=comment_since, user_id=user_id
+    )
+    enriched = enrich_task(task, user_id=user_id)
 
     checklist = [
         "Read spec content below",
@@ -251,8 +264,9 @@ def run_task_record_progress(
     master_name: str,
     comment: Optional[str] = None,
     comment_type: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    task = get_task(task_id)
+    task = get_task(task_id, user_id=user_id)
     if not task:
         raise ValidationError(f"Task '{task_id}' not found", code="NOT_FOUND")
 
@@ -264,18 +278,20 @@ def run_task_record_progress(
         )
 
     progress_content = validate_doc_content(content, "progress")
-    upsert_task_doc(task_id, progress_content, doc_type="progress")
-    log_audit(agent_name, master_name, "task", task_id, "doc_updated", "doc_progress")
+    upsert_task_doc(task_id, progress_content, doc_type="progress", user_id=user_id)
+    log_audit(agent_name, master_name, "task", task_id, "doc_updated", "doc_progress",
+              user_id=user_id)
 
     added_comment = None
     if comment:
         comment_text = validate_comment_content(comment)
         if comment_type:
             comment_text = f"[{comment_type}] {comment_text}"
-        added_comment = add_comment("task", task_id, comment_text, author=agent_name)
-        log_audit(agent_name, master_name, "task", task_id, "comment_added")
+        added_comment = add_comment("task", task_id, comment_text, author=agent_name,
+                                    user_id=user_id)
+        log_audit(agent_name, master_name, "task", task_id, "comment_added", user_id=user_id)
 
-    meta = get_task_doc_meta(task_id, "progress")
+    meta = get_task_doc_meta(task_id, "progress", user_id=user_id)
     return {
         "task_id": task_id,
         "progress_updated": True,
@@ -292,8 +308,9 @@ def run_task_complete(
     master_name: str,
     closure: Optional[str] = None,
     closure_note: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    task = get_task(task_id)
+    task = get_task(task_id, user_id=user_id)
     if not task:
         raise ValidationError(f"Task '{task_id}' not found", code="NOT_FOUND")
 
@@ -308,7 +325,7 @@ def run_task_complete(
         note = require_text(closure_note, "closure_note", MIN_REASON_LEN, "Closure note")
         closure_content = f"## Summary\n{note}"
     else:
-        existing = get_task_doc_meta(task_id, "closure")
+        existing = get_task_doc_meta(task_id, "closure", user_id=user_id)
         if not existing:
             raise ValidationError(
                 "Provide closure (full markdown) or closure_note to complete the task",
@@ -316,16 +333,18 @@ def run_task_complete(
             )
         closure_content = existing["content"]
 
-    upsert_task_doc(task_id, closure_content, doc_type="closure")
-    log_audit(agent_name, master_name, "task", task_id, "doc_updated", "doc_closure")
+    upsert_task_doc(task_id, closure_content, doc_type="closure", user_id=user_id)
+    log_audit(agent_name, master_name, "task", task_id, "doc_updated", "doc_closure",
+              user_id=user_id)
 
     old_status = task.get("status")
-    result = update_task(task_id, status="completed")
+    result = update_task(task_id, status="completed", user_id=user_id)
     if not result:
         raise ValidationError(f"Task '{task_id}' not found", code="NOT_FOUND")
-    log_audit(agent_name, master_name, "task", task_id, "status_changed", "status", old_status, "completed")
+    log_audit(agent_name, master_name, "task", task_id, "status_changed", "status",
+              old_status, "completed", user_id=user_id)
 
-    enriched = enrich_task(result)
+    enriched = enrich_task(result, user_id=user_id)
     next_steps: list[str] = []
     parent_id = task.get("parent_id")
     if parent_id:

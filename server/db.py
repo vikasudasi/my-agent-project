@@ -54,6 +54,11 @@ def _ensure_user_id_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE agent_audit_log ADD COLUMN user_id TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id)")
+    # Email is the dashboard login identifier; enforce uniqueness on non-empty
+    # emails (empty-string defaults may still repeat for legacy signups).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email <> ''"
+    )
 
 
 # ---------------------------------------------------------------------------

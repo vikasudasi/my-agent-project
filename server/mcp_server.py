@@ -8,9 +8,11 @@ All backed by SQLite, accessible by any MCP-compatible AI agent.
 import json
 import logging
 import os
+import sqlite3
 import sys
 from typing import Any, Optional
 
+import bcrypt
 import anyio
 from anyio.abc import TaskStatus
 from mcp.server import Server
@@ -21,7 +23,9 @@ from mcp.types import Tool, TextContent, CallToolResult, Resource
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from db import (
+    DB_PATH,
     init_db,
+    create_user,
     create_project,
     list_projects,
     get_project,
@@ -46,9 +50,11 @@ from db import (
     add_comment,
     list_comments,
     delete_comment,
-    onboard_agent,
     validate_api_key,
+    create_agent,
     list_agents,
+    list_user_agents,
+    reissue_agent_key,
     log_audit,
     get_audit_log,
     get_project_audit_log,
@@ -59,7 +65,6 @@ from mcp_enrich import (
     enrich_task_list,
     enrich_doc_response,
     build_project_snapshot,
-    list_projects_enriched,
 )
 from mcp_instructions import MCP_INSTRUCTIONS
 from mcp_resources import list_static_resources, read_static_resource
@@ -90,7 +95,7 @@ logger = logging.getLogger("mcp-server")
 # API key property used by all mutation tools
 _API_KEY_PROP = {
     "type": "string",
-    "description": "API key for authentication. Prefer Authorization: Bearer <key> header via MCP client config. Get one via agent_onboard tool.",
+    "description": "API key for authentication. Prefer Authorization: Bearer *** header via MCP client config. Get one via user_signup then agent_create.",
 }
 
 _API_KEY_OPTIONAL_PROP = {
@@ -106,6 +111,7 @@ _MUTATION_TOOLS = {
     "doc_project_update", "doc_task_update",
     "comment_add",
     "task_begin_work", "task_record_progress", "task_complete",
+    "agent_create", "agent_reissue",
 }
 def _bearer_token_from_request() -> Optional[str]:
     """Extract bearer token from the incoming HTTP request's Authorization header."""
@@ -181,14 +187,15 @@ def _ok_mutation(
     return _ok(data, tool=tool, warnings=warnings or None, next_steps=next_steps or None)
 
 
-def _optional_agent_name(arguments: dict) -> tuple[Optional[str], Optional[CallToolResult]]:
+def _optional_agent(arguments: dict) -> tuple[Optional[dict], Optional[CallToolResult]]:
+    """Resolve the authenticated agent, erroring on invalid/missing API key."""
     api_key = arguments.get("api_key") or _bearer_token_from_request() or os.environ.get("TM_API_KEY")
     if not api_key:
         return None, None
     agent = validate_api_key(api_key)
     if not agent:
-        return None, _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
-    return agent["name"], None
+        return None, _err("Invalid API key.", code="AUTH_INVALID")
+    return agent, None
 
 
 def _ok_read(
@@ -669,15 +676,69 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="agent_onboard",
-            description=_tool("agent_onboard"),
+            name="user_signup",
+            description="Create a new user account. Derives a username from your email. Returns the user record. Then call agent_create to onboard an agent.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string"},
-                    "master_name": {"type": "string"},
+                    "email": {
+                        "type": "string",
+                        "description": "Your email address (used to derive a username)",
+                    },
+                    "password": {
+                        "type": "string",
+                        "minLength": 8,
+                        "description": "Password (min 8 characters, bcrypt-hashed)",
+                    },
                 },
-                "required": ["name", "master_name"],
+                "required": ["email", "password"],
+            },
+        ),
+        Tool(
+            name="user_login",
+            description="Authenticate a user by email and password. Returns the user record on success — use this to verify credentials before creating agents.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string"},
+                    "password": {"type": "string"},
+                },
+                "required": ["email", "password"],
+            },
+        ),
+        Tool(
+            name="agent_create",
+            description="Create a new agent for the currently authenticated user. Returns agent info + api_key (shown once). Requires auth — call user_signup first if you don't have an account.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 3, "description": "Unique agent name"},
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="agent_list_my",
+            description="List all agents owned by the currently authenticated user. Returns an empty list if no auth is provided.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="agent_reissue",
+            description="Reissue the API key for an agent owned by the authenticated user. The old key is invalidated immediately — save the new key.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string", "description": "ID of the agent to reissue"},
+                    "api_key": _API_KEY_PROP,
+                },
+                "required": ["agent_id"],
             },
         ),
         Tool(
@@ -733,14 +794,14 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 )
             agent = validate_api_key(api_key)
             if not agent:
-                return _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
+                return _err("Invalid API key.", code="AUTH_INVALID")
 
         # ---- Projects ----
         if name == "project_create":
             validated = validate_project_create(arguments)
-            result = create_project(validated["name"], validated["description"])
-            upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec")
-            log_audit(agent["name"], agent["master_name"], "project", result["id"], "created")
+            result = create_project(validated["name"], validated["description"], user_id=agent["user_id"])
+            upsert_project_doc(result["id"], validated["initial_spec"], doc_type="spec", user_id=agent["user_id"])
+            log_audit(agent["name"], agent["master_name"], "project", result["id"], "created", user_id=agent.get("user_id"))
             enriched = enrich_project(result)
             return _ok_mutation(enriched, name, arguments=arguments)
 
@@ -748,18 +809,24 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             status = arguments.get("status", "active")
             status_filter = None if status == "all" else status
             include_progress = arguments.get("include_progress", True)
-            result = list_projects_enriched(
+            agent_ctx, _ = _optional_agent(arguments)
+            user_id = agent_ctx["user_id"] if agent_ctx else None
+            result = list_projects(
                 status=status_filter,
                 q=arguments.get("q"),
-                include_progress=include_progress,
+                user_id=user_id,
             )
+            if include_progress:
+                result = [enrich_project(p) for p in result]
             return _ok_read(result, name, arguments=arguments)
 
         elif name == "project_get":
-            agent_name, auth_err = _optional_agent_name(arguments)
+            agent_ctx, auth_err = _optional_agent(arguments)
             if auth_err:
                 return auth_err
-            result = get_project_progress(arguments["project_id"])
+            agent_name = agent_ctx["name"] if agent_ctx else None
+            user_id = agent_ctx["user_id"] if agent_ctx else None
+            result = get_project_progress(arguments["project_id"], user_id=user_id)
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
             result = enrich_project(result, for_read=True)
@@ -768,18 +835,21 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_snapshot":
-            agent_name, auth_err = _optional_agent_name(arguments)
+            agent_ctx, auth_err = _optional_agent(arguments)
             if auth_err:
                 return auth_err
+            agent_name = agent_ctx["name"] if agent_ctx else None
+            user_id = agent_ctx["user_id"] if agent_ctx else None
             snapshot = build_project_snapshot(
-                arguments["project_id"], for_read=True, agent_name=agent_name
+                arguments["project_id"], for_read=True, agent_name=agent_name,
+                user_id=user_id,
             )
             if not snapshot:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
             return _ok_read(snapshot, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "project_update":
-            old = get_project(arguments["project_id"])
+            old = get_project(arguments["project_id"], user_id=agent["user_id"])
             if not old:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
             reason = validate_project_update(arguments, old)
@@ -788,11 +858,13 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 name=arguments.get("name"),
                 description=arguments.get("description"),
                 status=arguments.get("status"),
+                user_id=agent["user_id"],
             )
             if reason and arguments.get("status") and old.get("status") != arguments.get("status"):
                 add_comment(
                     "project", arguments["project_id"],
                     f"[status_change] {reason}", author=agent["name"],
+                    user_id=agent["user_id"],
                 )
             for field in ("name", "description", "status"):
                 old_val = old.get(field)
@@ -801,7 +873,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                     log_audit(agent["name"], agent["master_name"], "project",
                               arguments["project_id"], "updated", field,
                               str(old_val) if old_val else None,
-                              str(new_val) if new_val else None)
+                              str(new_val) if new_val else None,
+                              user_id=agent.get("user_id"))
             return _ok_mutation(
                 enrich_project(result), name, arguments=arguments, old=old
             )
@@ -810,22 +883,24 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             reason = require_text(
                 arguments.get("reason", ""), "reason", MIN_REASON_LEN, "Archive reason"
             )
-            old = get_project(arguments["project_id"])
+            old = get_project(arguments["project_id"], user_id=agent["user_id"])
             if not old:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            result = archive_project(arguments["project_id"])
-            add_comment("project", arguments["project_id"], f"[archived] {reason}", author=agent["name"])
+            result = archive_project(arguments["project_id"], user_id=agent["user_id"])
+            add_comment("project", arguments["project_id"], f"[archived] {reason}", author=agent["name"], user_id=agent["user_id"])
             log_audit(agent["name"], agent["master_name"], "project",
-                      arguments["project_id"], "updated", "status", old["status"], "archived")
+                      arguments["project_id"], "updated", "status", old["status"], "archived",
+                      user_id=agent.get("user_id"))
             return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_restore":
-            old = get_project(arguments["project_id"])
+            old = get_project(arguments["project_id"], user_id=agent["user_id"])
             if not old:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            result = update_project(arguments["project_id"], status="active")
+            result = update_project(arguments["project_id"], status="active", user_id=agent["user_id"])
             log_audit(agent["name"], agent["master_name"], "project",
-                      arguments["project_id"], "updated", "status", old["status"], "active")
+                      arguments["project_id"], "updated", "status", old["status"], "active",
+                      user_id=agent.get("user_id"))
             return _ok_mutation(enrich_project(result), name, arguments=arguments)
 
         elif name == "project_delete":
@@ -833,11 +908,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 arguments.get("reason", ""), "reason", MIN_REASON_LEN, "Delete reason"
             )
             pid = arguments["project_id"]
-            if not get_project(pid):
+            if not get_project(pid, user_id=agent["user_id"]):
                 return _err(f"Project '{pid}' not found", code="NOT_FOUND")
-            add_comment("project", pid, f"[deleted] {reason}", author=agent["name"])
-            delete_project(pid)
-            log_audit(agent["name"], agent["master_name"], "project", pid, "deleted")
+            add_comment("project", pid, f"[deleted] {reason}", author=agent["name"], user_id=agent["user_id"])
+            delete_project(pid, user_id=agent["user_id"])
+            log_audit(agent["name"], agent["master_name"], "project", pid, "deleted", user_id=agent.get("user_id"))
             return _ok(
                 {"deleted": True, "project_id": pid},
                 tool=name,
@@ -851,11 +926,12 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 validated["description"],
                 parent_id=validated.get("parent_id"),
                 after_task_id=arguments.get("after_task_id"),
+                user_id=agent["user_id"],
             )
             if not result:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
-            upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec")
-            log_audit(agent["name"], agent["master_name"], "task", result["id"], "created")
+            upsert_task_doc(result["id"], validated["initial_spec"], doc_type="spec", user_id=agent["user_id"])
+            log_audit(agent["name"], agent["master_name"], "task", result["id"], "created", user_id=agent.get("user_id"))
             enriched = enrich_task(result)
             enriched["created_by"] = {
                 "agent_name": agent["name"],
@@ -864,23 +940,28 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _ok_mutation(enriched, name, arguments=arguments)
 
         elif name == "task_list":
-            agent_name, auth_err = _optional_agent_name(arguments)
+            agent_ctx, auth_err = _optional_agent(arguments)
             if auth_err:
                 return auth_err
+            agent_name = agent_ctx["name"] if agent_ctx else None
+            user_id = agent_ctx["user_id"] if agent_ctx else None
             result = list_tasks(
                 arguments["project_id"],
                 status=arguments.get("status"),
                 parent_id=arguments.get("parent_id"),
+                user_id=user_id,
             )
             if arguments.get("include_enrichment", True):
                 result = enrich_task_list(result, for_read=True, agent_name=agent_name)
             return _ok_read(result, name, arguments=arguments, agent_name=agent_name)
 
         elif name == "task_get":
-            agent_name, auth_err = _optional_agent_name(arguments)
+            agent_ctx, auth_err = _optional_agent(arguments)
             if auth_err:
                 return auth_err
-            result = get_task(arguments["task_id"])
+            agent_name = agent_ctx["name"] if agent_ctx else None
+            user_id = agent_ctx["user_id"] if agent_ctx else None
+            result = get_task(arguments["task_id"], user_id=user_id)
             if not result:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             enriched = enrich_task(
@@ -899,7 +980,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             return _ok(result, tool=name)
 
         elif name == "task_update":
-            old = get_task(arguments["task_id"])
+            old = get_task(arguments["task_id"], user_id=agent["user_id"])
             if not old:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             tid = arguments["task_id"]
@@ -913,19 +994,22 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 add_comment(
                     "task", tid,
                     f"[blocker] {extras['blocker_reason']}", author=agent["name"],
+                    user_id=agent["user_id"],
                 )
             if new_status == "failed" and extras.get("failure_reason"):
                 add_comment(
                     "task", tid,
                     f"[failed] {extras['failure_reason']}", author=agent["name"],
+                    user_id=agent["user_id"],
                 )
             if new_status == "completed" and extras.get("closure_note"):
-                upsert_task_doc(tid, f"## Summary\n{extras['closure_note']}", doc_type="closure")
+                upsert_task_doc(tid, f"## Summary\n{extras['closure_note']}", doc_type="closure", user_id=agent["user_id"])
             result = update_task(
                 tid,
                 title=arguments.get("title"),
                 description=arguments.get("description"),
                 status=new_status,
+                user_id=agent["user_id"],
             )
             for field in ("title", "description", "status"):
                 old_val = old.get(field)
@@ -935,7 +1019,8 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                     log_audit(agent["name"], agent["master_name"], "task",
                               tid, action, field,
                               str(old_val) if old_val else None,
-                              str(new_val) if new_val else None)
+                              str(new_val) if new_val else None,
+                              user_id=agent.get("user_id"))
             return _ok_mutation(
                 enrich_task(result),
                 name,
@@ -948,24 +1033,30 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             parent = arguments.get("parent_id")
             if parent == "":
                 parent = None
-            old = get_task(arguments["task_id"])
-            result = move_task(arguments["task_id"], after_task_id=after, parent_id=parent)
+            old = get_task(arguments["task_id"], user_id=agent["user_id"])
+            result = move_task(
+                arguments["task_id"],
+                after_task_id=arguments.get("after_task_id"),
+                parent_id=parent,
+                user_id=agent["user_id"],
+            )
             if not result:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             if old and old.get("parent_id") != result.get("parent_id"):
                 log_audit(agent["name"], agent["master_name"], "task",
                           arguments["task_id"], "moved", "parent_id",
-                          old.get("parent_id"), result.get("parent_id"))
+                          old.get("parent_id"), result.get("parent_id"),
+                          user_id=agent.get("user_id"))
             return _ok_mutation(enrich_task(result), name, arguments=arguments)
 
         elif name == "task_delete":
             reason = validate_task_delete(arguments)
             tid = arguments["task_id"]
-            if not get_task(tid):
+            if not get_task(tid, user_id=agent["user_id"]):
                 return _err(f"Task '{tid}' not found", code="NOT_FOUND")
-            add_comment("task", tid, f"[deleted] {reason}", author=agent["name"])
-            delete_task(tid)
-            log_audit(agent["name"], agent["master_name"], "task", tid, "deleted")
+            add_comment("task", tid, f"[deleted] {reason}", author=agent["name"], user_id=agent["user_id"])
+            delete_task(tid, user_id=agent["user_id"])
+            log_audit(agent["name"], agent["master_name"], "task", tid, "deleted", user_id=agent.get("user_id"))
             return _ok(
                 {"deleted": True, "task_id": tid},
                 tool=name,
@@ -982,11 +1073,12 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         elif name == "doc_project_update":
             doc_type = arguments.get("doc_type", "spec")
             content = validate_doc_content(arguments["content"], doc_type)
-            ok = upsert_project_doc(arguments["project_id"], content, doc_type=doc_type)
+            ok = upsert_project_doc(arguments["project_id"], content, doc_type=doc_type, user_id=agent["user_id"])
             if not ok:
                 return _err(f"Project '{arguments['project_id']}' not found", code="NOT_FOUND")
             log_audit(agent["name"], agent["master_name"], "project",
-                      arguments["project_id"], "doc_updated", f"doc_{doc_type}")
+                      arguments["project_id"], "doc_updated", f"doc_{doc_type}",
+                      user_id=agent.get("user_id"))
             meta = get_project_doc_meta(arguments["project_id"], doc_type)
             doc_payload = {
                 "updated": True,
@@ -1008,11 +1100,12 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         elif name == "doc_task_update":
             doc_type = arguments.get("doc_type", "spec")
             content = validate_doc_content(arguments["content"], doc_type)
-            ok = upsert_task_doc(arguments["task_id"], content, doc_type=doc_type)
+            ok = upsert_task_doc(arguments["task_id"], content, doc_type=doc_type, user_id=agent["user_id"])
             if not ok:
                 return _err(f"Task '{arguments['task_id']}' not found", code="NOT_FOUND")
             log_audit(agent["name"], agent["master_name"], "task",
-                      arguments["task_id"], "doc_updated", f"doc_{doc_type}")
+                      arguments["task_id"], "doc_updated", f"doc_{doc_type}",
+                      user_id=agent.get("user_id"))
             meta = get_task_doc_meta(arguments["task_id"], doc_type)
             doc_payload = {
                 "updated": True,
@@ -1033,9 +1126,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 arguments["entity_id"],
                 content,
                 author=author,
+                user_id=agent["user_id"],
             )
             log_audit(agent["name"], agent["master_name"],
-                      arguments["entity_type"], arguments["entity_id"], "comment_added")
+                      arguments["entity_type"], arguments["entity_id"], "comment_added",
+                      user_id=agent.get("user_id"))
             return _ok_mutation(result, name, arguments=arguments)
 
         elif name == "comment_list":
@@ -1049,9 +1144,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 
         # ---- Workflow tools ----
         elif name == "session_context":
-            agent_name, auth_err = _optional_agent_name(arguments)
+            agent_ctx, auth_err = _optional_agent(arguments)
             if auth_err:
                 return auth_err
+            agent_name = agent_ctx["name"] if agent_ctx else None
+            user_id = agent_ctx["user_id"] if agent_ctx else None
 
             result = run_session_context(
                 project_id=arguments.get("project_id"),
@@ -1059,6 +1156,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 project_status=arguments.get("project_status", "active"),
                 include_snapshot=arguments.get("include_snapshot", True),
                 agent_name=agent_name,
+                user_id=user_id,
             )
             next_steps: list[str] = []
             if result["mode"] == "select_project":
@@ -1092,6 +1190,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 master_name=agent["master_name"],
                 comment_limit=arguments.get("comment_limit", 10),
                 comment_since=arguments.get("comment_since"),
+                user_id=agent.get("user_id"),
             )
             warnings = payload.pop("warnings", [])
             next_steps = ["Call task_record_progress when you have session findings"]
@@ -1107,6 +1206,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 master_name=agent["master_name"],
                 comment=arguments.get("comment"),
                 comment_type=arguments.get("comment_type"),
+                user_id=agent.get("user_id"),
             )
             return _ok(
                 payload,
@@ -1121,27 +1221,136 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
                 master_name=agent["master_name"],
                 closure=arguments.get("closure"),
                 closure_note=arguments.get("closure_note"),
+                user_id=agent.get("user_id"),
             )
             warnings = payload.pop("warnings", None)
             next_steps = payload.pop("next_steps", None)
             return _ok(payload, tool=name, warnings=warnings, next_steps=next_steps)
 
-        # ---- Agent & Audit ----
-        elif name == "agent_onboard":
-            result = onboard_agent(arguments["name"], arguments["master_name"])
-            if not result:
-                return _err(f"Agent '{arguments['name']}' already exists.", code="CONFLICT")
+        # ---- User & Agent Management ----
+        elif name == "user_signup":
+            email = arguments["email"].strip().lower()
+            if len(arguments.get("password", "")) < 8:
+                return _err("Password must be at least 8 characters.", code="INVALID_PARAMS")
+            # Check for existing email
+            with sqlite3.connect(DB_PATH) as check_conn:
+                check_conn.row_factory = sqlite3.Row
+                existing = check_conn.execute(
+                    "SELECT id FROM users WHERE email = ?", (email,)
+                ).fetchone()
+            if existing:
+                return _err(
+                    f"A user with email '{email}' already exists.",
+                    code="SV_CONFLICT",
+                    remediation="Use user_login instead.",
+                )
+            # Derive username from email local-part
+            base_username = email.split("@")[0]
+            username = base_username
+            suffix = 1
+            with sqlite3.connect(DB_PATH) as un_conn:
+                un_conn.row_factory = sqlite3.Row
+                while un_conn.execute(
+                    "SELECT id FROM users WHERE username = ?", (username,)
+                ).fetchone():
+                    username = f"{base_username}{suffix}"
+                    suffix += 1
+            user = create_user(username, email, arguments["password"])
+            if not user:
+                return _err(
+                    f"Could not create user '{username}'.",
+                    code="SV_CONFLICT",
+                )
+            return _ok_mutation(user, name, arguments=arguments)
+
+        elif name == "user_login":
+            email = arguments["email"].strip().lower()
+            password = arguments["password"]
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM users WHERE email = ?", (email,)
+                ).fetchone()
+            if not row:
+                return _err("Invalid email or password.", code="AUTH_INVALID")
+            if not bcrypt.checkpw(
+                password.encode("utf-8"), row["password_hash"].encode("utf-8")
+            ):
+                return _err("Invalid email or password.", code="AUTH_INVALID")
             return _ok_mutation(
                 {
-                    "agent_id": result["id"],
-                    "agent_name": result["name"],
-                    "master_name": result["master_name"],
-                    "api_key": result["api_key"],
-                    "created_at": result["created_at"],
+                    "id": row["id"],
+                    "username": row["username"],
+                    "email": row["email"],
+                    "role": row["role"],
+                    "created_at": row["created_at"],
                 },
                 name,
+                arguments=arguments,
             )
 
+        elif name == "agent_create":
+            if len(arguments.get("name", "").strip()) < 3:
+                return _err("Agent name must be at least 3 characters.", code="INVALID_PARAMS")
+            result = create_agent(
+                user_id=agent["user_id"],
+                name=arguments["name"].strip(),
+            )
+            if not result:
+                return _err(
+                    f"Could not create agent '{arguments['name']}'. "
+                    "The name may already be taken.",
+                    code="SV_CONFLICT",
+                )
+            return _ok_mutation(
+                {
+                    "agent": {
+                        "id": result["id"],
+                        "name": result["name"],
+                        "master_name": result["master_name"],
+                        "role": result.get("role", "agent"),
+                        "created_at": result.get("created_at"),
+                    },
+                    "api_key": result["api_key"],
+                },
+                name,
+                arguments=arguments,
+                warnings=["Save the api_key now — it will not be shown again."],
+            )
+
+        elif name == "agent_list_my":
+            agent_ctx, _ = _optional_agent(arguments)
+            if not agent_ctx:
+                return _ok([], tool=name)
+            result = list_user_agents(agent_ctx["user_id"])
+            return _ok(result, tool=name)
+
+        elif name == "agent_reissue":
+            if "agent_id" not in arguments:
+                return _err("agent_id is required.", code="INVALID_PARAMS")
+            result = reissue_agent_key(arguments["agent_id"], agent["user_id"])
+            if not result:
+                return _err(
+                    f"Agent '{arguments['agent_id']}' not found or not owned by you.",
+                    code="NOT_FOUND",
+                )
+            return _ok_mutation(
+                {
+                    "agent": {
+                        "id": result["id"],
+                        "name": result["name"],
+                        "master_name": result["master_name"],
+                        "role": result.get("role", "agent"),
+                        "created_at": result.get("created_at"),
+                    },
+                    "api_key": result["api_key"],
+                },
+                name,
+                arguments=arguments,
+                warnings=["Save the new api_key now — it will not be shown again."],
+            )
+
+        # ---- Agent & Audit ----
         elif name == "agent_list":
             return _ok(list_agents(), tool=name)
 

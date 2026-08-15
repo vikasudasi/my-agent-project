@@ -44,7 +44,7 @@ def build_hints(
                 next_steps.append(f"task_update {task_id} status=completed")
     elif tool == "comment_add":
         _hints_comment_add(arguments, next_steps)
-    elif tool == "agent_onboard":
+    elif tool in ("agent_create", "agent_reissue"):
         next_steps.extend([
             "Save api_key immediately — it is shown only once",
             "Set TM_API_KEY in the environment for future mutations",
