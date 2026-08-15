@@ -90,7 +90,7 @@ logger = logging.getLogger("mcp-server")
 # API key property used by all mutation tools
 _API_KEY_PROP = {
     "type": "string",
-    "description": "API key for authentication. Get one via agent_onboard tool.",
+    "description": "API key for authentication. Prefer Authorization: Bearer <key> header via MCP client config. Get one via agent_onboard tool.",
 }
 
 _API_KEY_OPTIONAL_PROP = {
@@ -107,6 +107,19 @@ _MUTATION_TOOLS = {
     "comment_add",
     "task_begin_work", "task_record_progress", "task_complete",
 }
+def _bearer_token_from_request() -> Optional[str]:
+    """Extract bearer token from the incoming HTTP request's Authorization header."""
+    try:
+        ctx = server.request_context
+        req = ctx.request
+        if req is not None:
+            auth = req.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                return auth[7:].strip()
+    except (LookupError, AttributeError):
+        pass
+    return None
+
 
 _DESC_PROP = {
     "type": "string",
@@ -169,7 +182,7 @@ def _ok_mutation(
 
 
 def _optional_agent_name(arguments: dict) -> tuple[Optional[str], Optional[CallToolResult]]:
-    api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+    api_key = arguments.get("api_key") or _bearer_token_from_request() or os.environ.get("TM_API_KEY")
     if not api_key:
         return None, None
     agent = validate_api_key(api_key)
@@ -226,7 +239,7 @@ async def list_tools() -> list[Tool]:
                     "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["name", "description", "initial_spec", "api_key"],
+                "required": ["name", "description", "initial_spec"],
             },
         ),
         Tool(
@@ -293,7 +306,7 @@ async def list_tools() -> list[Tool]:
                     "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "api_key"],
+                "required": ["project_id"],
             },
         ),
         Tool(
@@ -306,7 +319,7 @@ async def list_tools() -> list[Tool]:
                     "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "reason", "api_key"],
+                "required": ["project_id", "reason"],
             },
         ),
         Tool(
@@ -318,7 +331,7 @@ async def list_tools() -> list[Tool]:
                     "project_id": {"type": "string"},
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "api_key"],
+                "required": ["project_id"],
             },
         ),
         Tool(
@@ -331,7 +344,7 @@ async def list_tools() -> list[Tool]:
                     "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "reason", "api_key"],
+                "required": ["project_id", "reason"],
             },
         ),
         Tool(
@@ -352,7 +365,7 @@ async def list_tools() -> list[Tool]:
                     "initial_spec": _INITIAL_SPEC_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "title", "description", "initial_spec", "api_key"],
+                "required": ["project_id", "title", "description", "initial_spec"],
             },
         ),
         Tool(
@@ -430,7 +443,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "api_key"],
+                "required": ["task_id"],
             },
         ),
         Tool(
@@ -447,7 +460,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "api_key"],
+                "required": ["task_id"],
             },
         ),
         Tool(
@@ -460,7 +473,7 @@ async def list_tools() -> list[Tool]:
                     "reason": _REASON_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "reason", "api_key"],
+                "required": ["task_id", "reason"],
             },
         ),
         Tool(
@@ -486,7 +499,7 @@ async def list_tools() -> list[Tool]:
                     "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["project_id", "content", "api_key"],
+                "required": ["project_id", "content"],
             },
         ),
         Tool(
@@ -512,7 +525,7 @@ async def list_tools() -> list[Tool]:
                     "doc_type": DOC_TYPE_PROP,
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "content", "api_key"],
+                "required": ["task_id", "content"],
             },
         ),
         Tool(
@@ -531,7 +544,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["entity_type", "entity_id", "content", "api_key"],
+                "required": ["entity_type", "entity_id", "content"],
             },
         ),
         Tool(
@@ -604,7 +617,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "api_key"],
+                "required": ["task_id"],
             },
         ),
         Tool(
@@ -630,7 +643,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "content", "api_key"],
+                "required": ["task_id", "content"],
             },
         ),
         Tool(
@@ -652,7 +665,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "api_key": _API_KEY_PROP,
                 },
-                "required": ["task_id", "api_key"],
+                "required": ["task_id"],
             },
         ),
         Tool(
@@ -673,7 +686,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {"api_key": _API_KEY_PROP},
-                "required": ["api_key"],
+                "required": [],
             },
         ),
         Tool(
@@ -712,10 +725,10 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
     try:
         agent = None
         if name in _MUTATION_TOOLS:
-            api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
+            api_key = arguments.get("api_key") or _bearer_token_from_request() or os.environ.get("TM_API_KEY")
             if not api_key:
                 return _err(
-                    "Authentication required. Provide api_key or set TM_API_KEY.",
+                    "Authentication required. Provide api_key, set Authorization bearer header, or set TM_API_KEY.",
                     code="AUTH_REQUIRED",
                 )
             agent = validate_api_key(api_key)
@@ -1036,13 +1049,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 
         # ---- Workflow tools ----
         elif name == "session_context":
-            agent_name = None
-            api_key = arguments.get("api_key") or os.environ.get("TM_API_KEY")
-            if api_key:
-                auth_agent = validate_api_key(api_key)
-                if not auth_agent:
-                    return _err("Invalid API key. Use agent_onboard to register.", code="AUTH_INVALID")
-                agent_name = auth_agent["name"]
+            agent_name, auth_err = _optional_agent_name(arguments)
+            if auth_err:
+                return auth_err
 
             result = run_session_context(
                 project_id=arguments.get("project_id"),
