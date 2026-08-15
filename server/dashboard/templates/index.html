@@ -26,7 +26,7 @@
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-    <div class="lg:col-span-1">
+    <div class="lg:col-span-1 order-2 lg:order-1">
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-8">
             <h2 class="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h2>
             {% if recent_activity %}
@@ -61,7 +61,7 @@
         </div>
     </div>
 
-    <div class="lg:col-span-2 space-y-6">
+    <div class="lg:col-span-2 space-y-6 order-1 lg:order-2">
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
             <form method="GET" action="/" class="flex flex-wrap gap-3 items-end">
                 <div class="flex-1 min-w-[200px]">

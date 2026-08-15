@@ -210,7 +210,7 @@ def _pagination_offset(page: int, limit: int) -> int:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    exact_paths = {"/", "/login", "/logout"}
+    exact_paths = {"/", "/login", "/logout", "/onboarding"}
     prefix_paths = {"/static/"}
     path = request.url.path
     if path in exact_paths or any(path.startswith(p) for p in prefix_paths):
@@ -282,6 +282,17 @@ async def landing(request: Request):
     return templates.TemplateResponse(
         request,
         "landing.html",
+        {"user": user},
+    )
+
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding(request: Request):
+    """Public onboarding guide — agent configuration instructions."""
+    user = _get_session_user(request)
+    return templates.TemplateResponse(
+        request,
+        "onboarding.html",
         {"user": user},
     )
 

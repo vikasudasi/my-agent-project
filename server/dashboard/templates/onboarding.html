@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Onboarding Guide — AI Task Manager</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+    <!-- Top navigation bar -->
+    <nav class="sticky top-0 z-50 bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center py-3">
+                <a href="/" class="text-xl font-bold text-gray-900">AI Task Manager</a>
+                <div class="flex items-center gap-1 sm:gap-2">
+                    <a href="/" class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">Home</a>
+                    <a href="/onboarding" class="px-3 py-2 text-sm font-medium text-gray-900 border-b-2 border-blue-600">Onboarding</a>
+                    <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                       class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">
+                        GitHub <span aria-hidden="true">&#8599;</span>
+                    </a>
+                    <a href="https://vikasudasi.github.io/" target="_blank" rel="noopener"
+                       class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">
+                        Author <span aria-hidden="true">&#8599;</span>
+                    </a>
+                    <a href="/login"
+                       class="ml-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-full hover:bg-blue-700 transition-colors">
+                        Login
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Header -->
+    <section class="bg-gray-50 border-b border-gray-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <h1 class="text-3xl sm:text-4xl font-bold text-gray-900">Agent Onboarding Guide</h1>
+            <p class="mt-3 text-lg text-gray-600">
+                Configure your AI agent to connect to the Task Manager MCP server in a few minutes.
+            </p>
+        </div>
+    </section>
+
+    <!-- Prerequisite: Get Your API Key -->
+    <section class="py-12">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="bg-blue-50 border border-blue-300 rounded-lg p-6">
+                <h2 class="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x1F511;</span> Step 0 — Get Your API Key
+                </h2>
+                <p class="mt-2 text-sm text-gray-700">
+                    Every agent needs an API key to authenticate with the MCP server.
+                    You can get one in three ways:
+                </p>
+                <ul class="mt-3 space-y-2 text-sm text-gray-700">
+                    <li>
+                        <strong>Via MCP (programmatic):</strong> Call the
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">user_signup</code> tool at
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">https://task-man.co.in/mcp</code>.
+                        It auto-creates your first agent and returns an
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">api_key</code> — save it immediately, it's shown only once.
+                    </li>
+                    <li>
+                        <strong>Via Dashboard:</strong> <a href="/login" class="text-blue-600 hover:underline">Log in</a>,
+                        then go to <strong>Agents</strong> &rarr; create or view an existing agent to copy its key.
+                    </li>
+                    <li>
+                        <strong>Via CLI:</strong>
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">python3 cli.py user signup --email you@example.com --password yourpass</code>
+                    </li>
+                </ul>
+                <p class="mt-3 text-sm text-gray-600">
+                    The MCP endpoint is <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">https://task-man.co.in/mcp</code>.
+                    Authenticate with the header <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">Authorization: Bearer YOUR_API_KEY</code>.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Agent Configuration Guides -->
+    <section class="py-12 bg-gray-50 border-t border-gray-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-2xl font-bold text-gray-900 mb-8">Configuration by Platform</h2>
+
+            <!-- Claude Code -->
+            <div class="bg-white border border-gray-200 rounded-lg p-6 mb-6 shadow-sm">
+                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x1F916;</span> Claude Code (CLI)
+                </h3>
+                <p class="mt-2 text-sm text-gray-600">
+                    One command. Replace <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">YOUR_API_KEY</code> with your actual key.
+                </p>
+                <pre class="mt-3 bg-gray-900 text-gray-100 p-4 rounded-md text-sm overflow-x-auto"><code>claude mcp add task-manager \
+  --transport http \
+  --header "Authorization: Bearer YOUR_API_KEY" \
+  https://task-man.co.in/mcp</code></pre>
+                <p class="mt-2 text-xs text-gray-500">
+                    Verify: <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">claude mcp list</code> should show <code>task-manager</code>.
+                </p>
+            </div>
+
+            <!-- Claude Desktop -->
+            <div class="bg-white border border-gray-200 rounded-lg p-6 mb-6 shadow-sm">
+                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x1F5A5;&#xFE0F;</span> Claude Desktop
+                </h3>
+                <p class="mt-2 text-sm text-gray-600">
+                    Edit your Claude Desktop config file, then restart the app.
+                </p>
+                <p class="mt-1 text-xs text-gray-500">
+                    Config file:
+                    <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">~/Library/Application Support/Claude/claude_desktop_config.json</code> (macOS)
+                    or <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">~/.config/Claude/claude_desktop_config.json</code> (Linux).
+                    Use Settings &rarr; Developer &rarr; Edit Config to open it.
+                </p>
+                <pre class="mt-3 bg-gray-900 text-gray-100 p-4 rounded-md text-sm overflow-x-auto"><code>{
+  "mcpServers": {
+    "task-manager": {
+      "type": "http",
+      "url": "https://task-man.co.in/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}</code></pre>
+                <p class="mt-2 text-xs text-gray-500 italic">
+                    If your Claude Desktop version doesn't support <code>type: http</code> directly,
+                    use the <code>mcp-remote</code> bridge: <code>npx mcp-remote https://task-man.co.in/mcp --header "Authorization: Bearer YOUR_API_KEY"</code>.
+                </p>
+            </div>
+
+            <!-- Cursor -->
+            <div class="bg-white border border-gray-200 rounded-lg p-6 mb-6 shadow-sm">
+                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x2699;&#xFE0F;</span> Cursor
+                </h3>
+                <p class="mt-2 text-sm text-gray-600">
+                    Create or edit <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">.cursor/mcp.json</code> in your project root
+                    (or <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">~/.cursor/mcp.json</code> for global).
+                </p>
+                <pre class="mt-3 bg-gray-900 text-gray-100 p-4 rounded-md text-sm overflow-x-auto"><code>{
+  "mcpServers": {
+    "task-manager": {
+      "url": "https://task-man.co.in/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}</code></pre>
+                <p class="mt-2 text-xs text-gray-500">
+                    Tip: Use <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">"Bearer ${env:TM_API_KEY}"</code> instead of a hard-coded key
+                    to keep secrets out of your repo.
+                </p>
+            </div>
+
+            <!-- Kiro -->
+            <div class="bg-white border border-gray-200 rounded-lg p-6 mb-6 shadow-sm">
+                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x2601;&#xFE0F;</span> Kiro (AWS)
+                </h3>
+                <p class="mt-2 text-sm text-gray-600">
+                    Edit <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">.kiro/settings/mcp.json</code> (workspace)
+                    or <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">~/.kiro/settings/mcp.json</code> (global).
+                    Open the command palette and search for <em>Kiro: Open MCP Config</em>.
+                </p>
+                <pre class="mt-3 bg-gray-900 text-gray-100 p-4 rounded-md text-sm overflow-x-auto"><code>{
+  "mcpServers": {
+    "task-manager": {
+      "url": "https://task-man.co.in/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}</code></pre>
+                <p class="mt-2 text-xs text-gray-500">
+                    Kiro supports <code>streamable-http</code> and <code>sse</code> transports.
+                    The <code>headers</code> object accepts any custom HTTP headers your server needs.
+                </p>
+            </div>
+
+            <!-- Any MCP Client -->
+            <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                <h3 class="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span aria-hidden="true">&#x1F310;</span> Any MCP-Compatible Client
+                </h3>
+                <p class="mt-2 text-sm text-gray-600">
+                    The server speaks <strong>streamable HTTP</strong> (MCP 2025 spec).
+                    Any client that supports remote MCP with custom headers will work.
+                </p>
+                <table class="mt-3 w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-200 text-left text-xs text-gray-500 uppercase">
+                            <th class="py-2 pr-4">Setting</th>
+                            <th class="py-2">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-700">
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-medium">Transport</td>
+                            <td class="py-2"><code class="text-xs bg-gray-100 px-1 py-0.5 rounded">streamable-http</code></td>
+                        </tr>
+                        <tr class="border-b border-gray-100">
+                            <td class="py-2 pr-4 font-medium">Endpoint URL</td>
+                            <td class="py-2"><code class="text-xs bg-gray-100 px-1 py-0.5 rounded">https://task-man.co.in/mcp</code></td>
+                        </tr>
+                        <tr>
+                            <td class="py-2 pr-4 font-medium">Auth Header</td>
+                            <td class="py-2"><code class="text-xs bg-gray-100 px-1 py-0.5 rounded">Authorization: Bearer &lt;your-api-key&gt;</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-gray-200 py-6">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-sm text-gray-500">
+            <p>
+                Built by
+                <a href="https://vikasudasi.github.io/" target="_blank" rel="noopener"
+                   class="text-gray-600 hover:text-gray-900 underline">Vikas Udasi</a>
+                <span class="mx-2" aria-hidden="true">|</span>
+                <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                   class="text-gray-600 hover:text-gray-900 underline">GitHub</a>
+            </p>
+        </div>
+    </footer>
+
+</body>
+</html>
