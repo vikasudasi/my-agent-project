@@ -441,6 +441,10 @@ async def project_detail(request: Request, project_id: str):
     doc_closure = get_project_doc(project_id, doc_type="closure", user_id=user["id"])
     comments = list_comments("project", project_id, user_id=user["id"])
 
+    view = request.query_params.get("view", "list")
+    if view not in ("list", "board"):
+        view = "list"
+
     return templates.TemplateResponse(
         request,
         "project.html",
@@ -453,6 +457,7 @@ async def project_detail(request: Request, project_id: str):
             doc_closure=doc_closure,
             comments=comments,
             statuses=["pending", "in_progress", "completed", "blocked", "failed", "cancelled"],
+            view=view,
         ),
     )
 

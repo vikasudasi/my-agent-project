@@ -233,6 +233,15 @@ class TestAuthenticatedUI:
         assert "<strong>Bold</strong>" in html or "<strong>" in html
         assert 'class="markdown-body' in html
 
+    def test_project_page_board_view(self, authed_client):
+        r = authed_client.get(f"/projects/{PROJECT_ID}?view=board")
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-view="board"' in html
+        assert "/static/js/kanban.js" in html
+        assert "Parent Task" in html
+        assert "Child Task" in html
+
     def test_task_detail_sidebar_indentation(self, authed_client):
         r = authed_client.get(f"/tasks/{PARENT_TASK_ID}")
         assert r.status_code == 200

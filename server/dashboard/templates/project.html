@@ -11,6 +11,9 @@
 {% block scripts %}
 <script src="/static/js/task-tree.js" defer></script>
 <script src="/static/js/task-filters.js" defer></script>
+{% if view == 'board' %}
+<script src="/static/js/kanban.js" defer></script>
+{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -39,7 +42,19 @@
 
 <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 class="text-lg font-semibold text-gray-900">Tasks</h2>
+        <div class="flex items-center gap-3">
+            <h2 class="text-lg font-semibold text-gray-900">Tasks</h2>
+            <div class="flex rounded-md border border-gray-300 overflow-hidden text-sm" role="group" aria-label="Task view">
+                <a href="?view=list"
+                   class="px-3 py-1 transition-colors {% if view == 'list' %}bg-blue-600 text-white{% else %}bg-white text-gray-600 hover:bg-gray-50{% endif %}">
+                    List
+                </a>
+                <a href="?view=board"
+                   class="px-3 py-1 border-l border-gray-300 transition-colors {% if view == 'board' %}bg-blue-600 text-white{% else %}bg-white text-gray-600 hover:bg-gray-50{% endif %}">
+                    Board
+                </a>
+            </div>
+        </div>
         <div class="flex flex-wrap items-center gap-2">
             <label for="taskSearch" class="sr-only">Search tasks</label>
             <input type="text" id="taskSearch" placeholder="Search tasks..."
@@ -94,12 +109,58 @@
     </form>
 
     {% if task_tree %}
+        {% if view == 'board' %}
+        {% macro kanban_column_cards(tasks, column_status) -%}
+        {% for task in tasks %}
+        {% if task.status == column_status %}
+        <div class="kanban-card bg-white border border-gray-200 rounded-md p-2 mb-2 cursor-grab active:cursor-grabbing shadow-sm hover:shadow transition-shadow"
+             draggable="true"
+             data-task-id="{{ task.id }}"
+             data-status="{{ task.status }}"
+             style="border-left: 3px solid {{ status_color(task.status) }}">
+            <a href="/tasks/{{ task.id }}" class="text-sm font-medium text-gray-900 hover:underline truncate block">{{ task.title }}</a>
+            {% if task.description %}
+            <p class="text-xs text-gray-500 truncate mt-0.5">{{ task.description }}</p>
+            {% endif %}
+            {% if task.children %}
+            <span class="text-xs text-gray-400 mt-0.5 block">{{ task.children | length }} subtask{{ 's' if task.children | length != 1 else '' }}</span>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% if task.children %}
+        {{ kanban_column_cards(task.children, column_status) }}
+        {% endif %}
+        {% endfor %}
+        {%- endmacro %}
+
+        <div id="kanbanBoard" data-view="board" class="overflow-x-auto -mx-2 px-2">
+            <div class="flex gap-3 min-w-max pb-2">
+                {% for s in statuses %}
+                {% set col_count = project.by_status.get(s, 0) %}
+                <div class="kanban-column w-72 min-w-72 flex-shrink-0 flex flex-col" data-status="{{ s }}">
+                    <div class="flex items-center gap-2 mb-2 px-1">
+                        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background-color: {{ status_color(s) }}"></span>
+                        <h3 class="text-sm font-semibold text-gray-700 capitalize">{{ s | replace('_', ' ') }}</h3>
+                        <span class="text-xs text-gray-400 ml-auto">{{ col_count }}</span>
+                    </div>
+                    <div class="kanban-dropzone flex-1 bg-gray-50 rounded-lg border border-gray-200 p-2 min-h-[8rem]">
+                        {{ kanban_column_cards(task_tree, s) }}
+                        {% if col_count == 0 %}
+                        <p class="text-xs text-gray-400 text-center py-4">No tasks</p>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% else %}
         <div class="space-y-2" id="taskList">
             {% for task in task_tree %}
                 {% include "task_item.html" %}
             {% endfor %}
         </div>
         <p id="noResults" class="hidden text-sm text-gray-500 text-center py-8">No tasks match your search or filter.</p>
+        {% endif %}
     {% else %}
         <p class="text-sm text-gray-500 text-center py-8">No tasks yet. Create one to start tracking progress.</p>
     {% endif %}
