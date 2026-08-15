@@ -3,6 +3,7 @@ import uuid
 import os
 import hashlib
 import secrets
+import bcrypt
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,28 +36,138 @@ def init_db():
         schema = f.read()
     with get_connection() as conn:
         conn.executescript(schema)
+        _ensure_user_id_columns(conn)
+
+
+def _ensure_user_id_columns(conn: sqlite3.Connection) -> None:
+    """Idempotently add user_id columns for databases created before the
+    user-management migration. Runs after the base schema so the users table
+    always exists by the time any REFERENCES clause is applied."""
+    def _has_column(table: str, column: str) -> bool:
+        return any(c["name"] == column for c in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+    if not _has_column("agents", "user_id"):
+        conn.execute("ALTER TABLE agents ADD COLUMN user_id TEXT REFERENCES users(id)")
+    if not _has_column("projects", "user_id"):
+        conn.execute("ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if not _has_column("agent_audit_log", "user_id"):
+        conn.execute("ALTER TABLE agent_audit_log ADD COLUMN user_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id)")
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str) -> str:
+    """Hash a plaintext password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    """Verify a plaintext password against a bcrypt hash."""
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def _user_from_row(row) -> dict:
+    """Shape a users row into a public user dict (never exposes password_hash)."""
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "email": row["email"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+    }
+
+
+def create_user(username: str, email: str = "", password: Optional[str] = None) -> Optional[dict]:
+    """Create a new user. Password is bcrypt-hashed. Returns user dict
+    (without password_hash) or None if the username is already taken."""
+    if not password:
+        raise ValueError("password is required")
+    uid = str(uuid.uuid4())
+    password_hash = _hash_password(password)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (id, username, email, password_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (uid, username, email or "", password_hash, now),
+            )
+        except sqlite3.IntegrityError:
+            return None  # username already exists
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+    return _user_from_row(row)
+
+
+def validate_user(username: str, password: str) -> Optional[dict]:
+    """Validate username/password credentials. Returns user dict (no
+    password_hash) on success, or None on failure."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if not row:
+        return None
+    if not _verify_password(password, row["password_hash"]):
+        return None
+    return _user_from_row(row)
+
+
+def get_user(user_id: str) -> Optional[dict]:
+    """Get a single user by id (without password_hash)."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _user_from_row(row) if row else None
+
+
+def list_users() -> list[dict]:
+    """List all users (without password_hash)."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
+    return [_user_from_row(r) for r in rows]
+
+
+def _default_user_id() -> Optional[str]:
+    """Fallback owning user for legacy callers that do not pass a user_id.
+    Returns the first admin user's id, or None if no users exist."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+    return row["id"] if row else None
 
 
 # ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------
 
-def create_project(name: str, description: str = "") -> dict:
+def create_project(name: str, description: str = "", user_id: Optional[str] = None) -> dict:
+    if user_id is None:
+        user_id = _default_user_id() or ""
     pid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (pid, name, description, now, now),
+            "INSERT INTO projects (id, name, description, user_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (pid, name, description, user_id, now, now),
         )
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
     return dict(row)
 
 
-def list_projects(status: Optional[str] = None, q: Optional[str] = None) -> list[dict]:
+def list_projects(status: Optional[str] = None, q: Optional[str] = None,
+                  user_id: Optional[str] = None) -> list[dict]:
     with get_connection() as conn:
         query = "SELECT * FROM projects WHERE 1=1"
         params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
         if status:
             query += " AND status = ?"
             params.append(status)
@@ -69,17 +180,30 @@ def list_projects(status: Optional[str] = None, q: Optional[str] = None) -> list
     return [dict(r) for r in rows]
 
 
-def get_project(project_id: str) -> Optional[dict]:
+def get_project(project_id: str, user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     return dict(row) if row else None
 
 
 def update_project(project_id: str, name: Optional[str] = None,
                    description: Optional[str] = None,
-                   status: Optional[str] = None) -> Optional[dict]:
+                   status: Optional[str] = None,
+                   user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        existing = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if user_id is not None:
+            existing = conn.execute(
+                "SELECT * FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        else:
+            existing = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not existing:
             return None
 
@@ -99,19 +223,26 @@ def update_project(project_id: str, name: Optional[str] = None,
     return dict(row)
 
 
-def archive_project(project_id: str) -> Optional[dict]:
-    return update_project(project_id, status="archived")
+def archive_project(project_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+    return update_project(project_id, status="archived", user_id=user_id)
 
 
-def delete_project(project_id: str) -> bool:
+def delete_project(project_id: str, user_id: Optional[str] = None) -> bool:
     with get_connection() as conn:
-        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        if user_id is not None:
+            cur = conn.execute(
+                "DELETE FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            )
+        else:
+            cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         deleted = cur.rowcount > 0
     return deleted
 
 
 def list_projects_with_progress(
-    status: Optional[str] = None, q: Optional[str] = None
+    status: Optional[str] = None, q: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict]:
     """List projects with task counts in a single query (avoids N+1)."""
     with get_connection() as conn:
@@ -125,6 +256,9 @@ def list_projects_with_progress(
             "WHERE 1=1"
         )
         params: list = []
+        if user_id is not None:
+            query += " AND p.user_id = ?"
+            params.append(user_id)
         if status:
             query += " AND p.status = ?"
             params.append(status)
@@ -145,9 +279,15 @@ def list_projects_with_progress(
     return result
 
 
-def get_project_progress(project_id: str) -> Optional[dict]:
+def get_project_progress(project_id: str, user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        proj = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if user_id is not None:
+            proj = conn.execute(
+                "SELECT * FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        else:
+            proj = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not proj:
             return None
 
@@ -218,11 +358,41 @@ def _rank_after(conn: sqlite3.Connection, project_id: str,
     return (after_rank + next_rank) / 2.0
 
 
+def _task_owned_by(conn: sqlite3.Connection, task_id: str, user_id: str) -> bool:
+    """True if the task's project is owned by user_id."""
+    row = conn.execute(
+        "SELECT p.user_id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?",
+        (task_id,),
+    ).fetchone()
+    return row is not None and row["user_id"] == user_id
+
+
+def _entity_owner_user_id(conn: sqlite3.Connection, entity_type: str, entity_id: str) -> Optional[str]:
+    """Resolve the owning project's user_id for a project or task entity."""
+    if entity_type == "project":
+        row = conn.execute("SELECT user_id FROM projects WHERE id = ?", (entity_id,)).fetchone()
+    elif entity_type == "task":
+        row = conn.execute(
+            "SELECT p.user_id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?",
+            (entity_id,),
+        ).fetchone()
+    else:
+        return None
+    return row["user_id"] if row else None
+
+
 def create_task(project_id: str, title: str, description: str = "",
                 parent_id: Optional[str] = None,
-                after_task_id: Optional[str] = None) -> Optional[dict]:
+                after_task_id: Optional[str] = None,
+                user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if user_id is not None:
+            proj = conn.execute(
+                "SELECT id FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        else:
+            proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not proj:
             return None
 
@@ -244,8 +414,17 @@ def create_task(project_id: str, title: str, description: str = "",
 
 
 def list_tasks(project_id: str, status: Optional[str] = None,
-               parent_id: Optional[str] = None) -> list[dict]:
+               parent_id: Optional[str] = None,
+               user_id: Optional[str] = None) -> list[dict]:
     with get_connection() as conn:
+        if user_id is not None:
+            owned = conn.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+            if not owned:
+                return []
+
         query = "SELECT * FROM tasks WHERE project_id = ?"
         params: list = [project_id]
 
@@ -263,18 +442,25 @@ def list_tasks(project_id: str, status: Optional[str] = None,
     return [dict(r) for r in rows]
 
 
-def get_task(task_id: str) -> Optional[dict]:
+def get_task(task_id: str, user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT t.* FROM tasks t JOIN projects p ON t.project_id = p.id "
+                "WHERE t.id = ? AND p.user_id = ?",
+                (task_id, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return dict(row) if row else None
 
 
-def get_task_tree(task_id: str) -> Optional[dict]:
+def get_task_tree(task_id: str, user_id: Optional[str] = None) -> Optional[dict]:
     """Get a task with its full recursive subtree of nested children."""
-    task = get_task(task_id)
+    task = get_task(task_id, user_id=user_id)
     if not task:
         return None
-    full = get_task_subtree(task["project_id"])
+    full = get_task_subtree(task["project_id"], user_id=user_id)
 
     def _find_node(nodes: list[dict], tid: str) -> Optional[dict]:
         for node in nodes:
@@ -289,9 +475,16 @@ def get_task_tree(task_id: str) -> Optional[dict]:
     return _find_node(full, task_id)
 
 
-def get_task_subtree(project_id: str) -> list[dict]:
+def get_task_subtree(project_id: str, user_id: Optional[str] = None) -> list[dict]:
     """Get hierarchical task tree for an entire project."""
     with get_connection() as conn:
+        if user_id is not None:
+            owned = conn.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+            if not owned:
+                return []
         rows = conn.execute(
             "SELECT * FROM tasks WHERE project_id = ? ORDER BY rank ASC", (project_id,)
         ).fetchall()
@@ -315,9 +508,17 @@ def get_task_subtree(project_id: str) -> list[dict]:
 
 def update_task(task_id: str, title: Optional[str] = None,
                 description: Optional[str] = None,
-                status: Optional[str] = None) -> Optional[dict]:
+                status: Optional[str] = None,
+                user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if user_id is not None:
+            existing = conn.execute(
+                "SELECT t.* FROM tasks t JOIN projects p ON t.project_id = p.id "
+                "WHERE t.id = ? AND p.user_id = ?",
+                (task_id, user_id),
+            ).fetchone()
+        else:
+            existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not existing:
             return None
 
@@ -342,9 +543,17 @@ _UNSET = "___UNSET___"
 
 
 def move_task(task_id: str, after_task_id: Optional[str] = None,
-              parent_id: Optional[str] = _UNSET) -> Optional[dict]:
+              parent_id: Optional[str] = _UNSET,
+              user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if user_id is not None:
+            task = conn.execute(
+                "SELECT t.* FROM tasks t JOIN projects p ON t.project_id = p.id "
+                "WHERE t.id = ? AND p.user_id = ?",
+                (task_id, user_id),
+            ).fetchone()
+        else:
+            task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not task:
             return None
 
@@ -367,8 +576,11 @@ def move_task(task_id: str, after_task_id: Optional[str] = None,
     return dict(row)
 
 
-def delete_task(task_id: str) -> bool:
+def delete_task(task_id: str, user_id: Optional[str] = None) -> bool:
     with get_connection() as conn:
+        if user_id is not None:
+            if not _task_owned_by(conn, task_id, user_id):
+                return False
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         deleted = cur.rowcount > 0
     return deleted
@@ -378,57 +590,71 @@ def delete_task(task_id: str) -> bool:
 # Documentation
 # ---------------------------------------------------------------------------
 
-def get_project_doc(project_id: str, doc_type: str = "spec") -> Optional[str]:
-    meta = get_project_doc_meta(project_id, doc_type)
+def get_project_doc(project_id: str, doc_type: str = "spec",
+                    user_id: Optional[str] = None) -> Optional[str]:
+    meta = get_project_doc_meta(project_id, doc_type, user_id=user_id)
     return meta["content"] if meta else ""
 
 
-def get_project_doc_meta(project_id: str, doc_type: str = "spec") -> Optional[dict]:
+def get_project_doc_meta(project_id: str, doc_type: str = "spec",
+                         user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT content, updated_at FROM project_docs WHERE project_id = ? AND doc_type = ?",
-            (project_id, doc_type),
-        ).fetchone()
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT d.content, d.updated_at FROM project_docs d "
+                "JOIN projects p ON d.project_id = p.id "
+                "WHERE d.project_id = ? AND d.doc_type = ? AND p.user_id = ?",
+                (project_id, doc_type, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT content, updated_at FROM project_docs WHERE project_id = ? AND doc_type = ?",
+                (project_id, doc_type),
+            ).fetchone()
     if not row or not row["content"]:
         return None
     return dict(row)
 
 
-def upsert_project_doc(project_id: str, content: str, doc_type: str = "spec") -> bool:
-    with get_connection() as conn:
-        proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not proj:
-            return False
-
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        doc_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO project_docs (id, project_id, doc_type, content, updated_at) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(project_id, doc_type) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-            (doc_id, project_id, doc_type, content, now),
-        )
-    return True
-
-
-def get_task_doc(task_id: str, doc_type: str = "spec") -> Optional[str]:
-    meta = get_task_doc_meta(task_id, doc_type)
+def get_task_doc(task_id: str, doc_type: str = "spec",
+                 user_id: Optional[str] = None) -> Optional[str]:
+    meta = get_task_doc_meta(task_id, doc_type, user_id=user_id)
     return meta["content"] if meta else ""
 
 
-def get_task_doc_meta(task_id: str, doc_type: str = "spec") -> Optional[dict]:
+def get_task_doc_meta(task_id: str, doc_type: str = "spec",
+                      user_id: Optional[str] = None) -> Optional[dict]:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT content, updated_at FROM task_docs WHERE task_id = ? AND doc_type = ?",
-            (task_id, doc_type),
-        ).fetchone()
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT d.content, d.updated_at FROM task_docs d "
+                "JOIN tasks t ON d.task_id = t.id "
+                "JOIN projects p ON t.project_id = p.id "
+                "WHERE d.task_id = ? AND d.doc_type = ? AND p.user_id = ?",
+                (task_id, doc_type, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT content, updated_at FROM task_docs WHERE task_id = ? AND doc_type = ?",
+                (task_id, doc_type),
+            ).fetchone()
     if not row or not row["content"]:
         return None
     return dict(row)
 
 
-def build_project_docs_hub(project_id: str, doc_type: str = "spec") -> dict:
+def build_project_docs_hub(project_id: str, doc_type: str = "spec",
+                           user_id: Optional[str] = None) -> dict:
     """Project doc + task tree with docs attached for read-only hub."""
     with get_connection() as conn:
+        if user_id is not None:
+            owned = conn.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+            if not owned:
+                return {"project_doc": None, "task_tree": []}
+
         proj_row = conn.execute(
             "SELECT content, updated_at FROM project_docs WHERE project_id = ? AND doc_type = ?",
             (project_id, doc_type),
@@ -446,7 +672,7 @@ def build_project_docs_hub(project_id: str, doc_type: str = "spec") -> dict:
         if r["content"]:
             docs_by_task[r["id"]] = {"content": r["content"], "updated_at": r["updated_at"]}
 
-    tree = get_task_subtree(project_id)
+    tree = get_task_subtree(project_id, user_id=user_id)
     _attach_docs_to_tree(tree, docs_by_task)
 
     return {
@@ -462,9 +688,17 @@ def _attach_docs_to_tree(tasks: list[dict], docs_by_task: dict[str, dict]) -> No
             _attach_docs_to_tree(t["children"], docs_by_task)
 
 
-def upsert_task_doc(task_id: str, content: str, doc_type: str = "spec") -> bool:
+def upsert_task_doc(task_id: str, content: str, doc_type: str = "spec",
+                    user_id: Optional[str] = None) -> bool:
     with get_connection() as conn:
-        t = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if user_id is not None:
+            t = conn.execute(
+                "SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id "
+                "WHERE t.id = ? AND p.user_id = ?",
+                (task_id, user_id),
+            ).fetchone()
+        else:
+            t = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not t:
             return False
 
@@ -478,15 +712,42 @@ def upsert_task_doc(task_id: str, content: str, doc_type: str = "spec") -> bool:
     return True
 
 
+def upsert_project_doc(project_id: str, content: str, doc_type: str = "spec",
+                       user_id: Optional[str] = None) -> bool:
+    with get_connection() as conn:
+        if user_id is not None:
+            proj = conn.execute(
+                "SELECT id FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        else:
+            proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not proj:
+            return False
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        doc_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO project_docs (id, project_id, doc_type, content, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(project_id, doc_type) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
+            (doc_id, project_id, doc_type, content, now),
+        )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Comments
 # ---------------------------------------------------------------------------
 
 def add_comment(entity_type: str, entity_id: str, content: str,
-                author: str = "") -> dict:
+                author: str = "", user_id: Optional[str] = None) -> Optional[dict]:
     cid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
+        if user_id is not None:
+            owner = _entity_owner_user_id(conn, entity_type, entity_id)
+            if owner != user_id:
+                return None
         conn.execute(
             "INSERT INTO comments (id, entity_type, entity_id, author, content, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -501,8 +762,14 @@ def list_comments(
     entity_id: str,
     limit: Optional[int] = None,
     since: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict]:
     with get_connection() as conn:
+        if user_id is not None:
+            owner = _entity_owner_user_id(conn, entity_type, entity_id)
+            if owner != user_id:
+                return []
+
         query = (
             "SELECT * FROM comments WHERE entity_type = ? AND entity_id = ?"
         )
@@ -518,8 +785,17 @@ def list_comments(
     return [dict(r) for r in rows]
 
 
-def delete_comment(comment_id: str) -> bool:
+def delete_comment(comment_id: str, user_id: Optional[str] = None) -> bool:
     with get_connection() as conn:
+        if user_id is not None:
+            comment = conn.execute(
+                "SELECT entity_type, entity_id FROM comments WHERE id = ?", (comment_id,)
+            ).fetchone()
+            if not comment:
+                return False
+            owner = _entity_owner_user_id(conn, comment["entity_type"], comment["entity_id"])
+            if owner != user_id:
+                return False
         cur = conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
         deleted = cur.rowcount > 0
     return deleted
@@ -581,8 +857,13 @@ def _generate_api_key() -> str:
     return "tm_" + secrets.token_hex(32)
 
 
-def onboard_agent(name: str, master_name: str) -> Optional[dict]:
-    """Register a new agent. Returns agent info + plaintext api_key (shown once)."""
+def onboard_agent(name: str, master_name: str,
+                  user_id: Optional[str] = None) -> Optional[dict]:
+    """DEPRECATED: register a standalone agent without user scope.
+
+    Kept for backward compatibility during the migration window only. New code
+    should use ``create_agent(user_id, name)`` instead.
+    Returns agent info + plaintext api_key (shown once)."""
     api_key = _generate_api_key()
     key_hash = _hash_key(api_key)
     aid = str(uuid.uuid4())
@@ -590,9 +871,9 @@ def onboard_agent(name: str, master_name: str) -> Optional[dict]:
     with get_connection() as conn:
         try:
             conn.execute(
-                "INSERT INTO agents (id, name, master_name, api_key_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (aid, name, master_name, key_hash, now),
+                "INSERT INTO agents (id, name, master_name, api_key_hash, user_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, name, master_name, key_hash, user_id, now),
             )
         except sqlite3.IntegrityError:
             return None  # Name already exists
@@ -602,38 +883,114 @@ def onboard_agent(name: str, master_name: str) -> Optional[dict]:
     return result
 
 
+def create_agent(user_id: str, name: str, master_name: Optional[str] = None) -> Optional[dict]:
+    """Create a new agent owned by ``user_id``. Returns agent info + plaintext
+    api_key (shown once), or None if the user does not exist or the name is
+    already taken. ``master_name`` defaults to the owning user's username."""
+    user = get_user(user_id)
+    if not user:
+        return None
+
+    api_key = _generate_api_key()
+    key_hash = _hash_key(api_key)
+    aid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    effective_master = master_name or user["username"]
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO agents (id, user_id, name, master_name, api_key_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, user_id, name, effective_master, key_hash, now),
+            )
+        except sqlite3.IntegrityError:
+            return None  # Name already exists
+        row = conn.execute(
+            "SELECT id, user_id, name, master_name, role, created_at, active FROM agents WHERE id = ?",
+            (aid,),
+        ).fetchone()
+    result = dict(row)
+    result["api_key"] = api_key  # Plaintext, shown once
+    return result
+
+
 def validate_api_key(api_key: str) -> Optional[dict]:
-    """Validate an API key. Returns agent dict if valid, None if invalid."""
+    """Validate an API key. Returns an enriched dict with user context, or None
+    if the key is invalid/inactive.
+
+    Return shape: {id, name, master_name, role, user_id, user_name, user_role}.
+    """
     key_hash = _hash_key(api_key)
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, master_name, role FROM agents WHERE api_key_hash = ? AND active = 1",
+            "SELECT a.id, a.name, a.master_name, a.role, a.user_id, "
+            "u.username AS user_name, u.role AS user_role "
+            "FROM agents a LEFT JOIN users u ON a.user_id = u.id "
+            "WHERE a.api_key_hash = ? AND a.active = 1",
             (key_hash,),
         ).fetchone()
     return dict(row) if row else None
 
 
 def list_agents() -> list[dict]:
-    """List all registered agents (excluding api_key_hash)."""
+    """List all registered agents (excluding api_key_hash) with user context."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, name, master_name, role, created_at, active FROM agents ORDER BY created_at DESC"
+            "SELECT a.id, a.name, a.master_name, a.role, a.created_at, a.active, a.user_id, "
+            "u.username AS user_name, u.role AS user_role "
+            "FROM agents a LEFT JOIN users u ON a.user_id = u.id ORDER BY a.created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_user_agents(user_id: str) -> list[dict]:
+    """List all agents owned by ``user_id`` (excluding api_key_hash)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, user_id, name, master_name, role, created_at, active "
+            "FROM agents WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_agent(agent_id: str) -> Optional[dict]:
-    """Get a single agent by ID."""
+    """Get a single agent by ID (excluding api_key_hash)."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, master_name, role, created_at, active FROM agents WHERE id = ?",
+            "SELECT a.id, a.name, a.master_name, a.role, a.created_at, a.active, a.user_id, "
+            "u.username AS user_name, u.role AS user_role "
+            "FROM agents a LEFT JOIN users u ON a.user_id = u.id WHERE a.id = ?",
             (agent_id,),
         ).fetchone()
     return dict(row) if row else None
 
 
+def reissue_agent_key(agent_id: str, user_id: str) -> Optional[dict]:
+    """Reissue an API key for an agent owned by ``user_id``. Invalidates the
+    old key and returns the new plaintext key once. Returns None if the agent
+    does not exist or is not owned by ``user_id``."""
+    api_key = _generate_api_key()
+    key_hash = _hash_key(api_key)
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT id FROM agents WHERE id = ? AND user_id = ?", (agent_id, user_id)
+        ).fetchone()
+        if not existing:
+            return None
+        conn.execute("UPDATE agents SET api_key_hash = ? WHERE id = ?", (key_hash, agent_id))
+        row = conn.execute(
+            "SELECT id, user_id, name, master_name, role, created_at, active FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+    result = dict(row)
+    result["api_key"] = api_key  # Plaintext, shown once
+    return result
+
+
 def reissue_api_key(agent_id: str) -> Optional[dict]:
-    """Generate a new API key for an agent. Invalidates the old one. Returns new plaintext key once."""
+    """DEPRECATED: reissue a key without user scope. Prefer
+    ``reissue_agent_key(agent_id, user_id)``. Returns new plaintext key once."""
     api_key = _generate_api_key()
     key_hash = _hash_key(api_key)
     with get_connection() as conn:
@@ -657,17 +1014,18 @@ def reissue_api_key(agent_id: str) -> Optional[dict]:
 def log_audit(agent_name: str, master_name: str, entity_type: str,
               entity_id: str, action: str, field: Optional[str] = None,
               old_value: Optional[str] = None,
-              new_value: Optional[str] = None) -> None:
+              new_value: Optional[str] = None,
+              user_id: Optional[str] = None) -> None:
     """Record a mutation in the audit log."""
     aid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO agent_audit_log (id, agent_name, master_name, entity_type, "
-            "entity_id, action, field, old_value, new_value, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "entity_id, action, field, old_value, new_value, user_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (aid, agent_name, master_name, entity_type, entity_id,
-             action, field, old_value, new_value, now),
+             action, field, old_value, new_value, user_id, now),
         )
 
 
