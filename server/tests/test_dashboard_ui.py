@@ -151,6 +151,11 @@ class TestStaticAssets:
 
 
 class TestAuth:
+    def test_landing_page_public(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "AI Task Management" in r.text
+
     def test_login_page_uses_static_css(self, client):
         r = client.get("/login")
         assert r.status_code == 200
@@ -159,8 +164,8 @@ class TestAuth:
         assert 'name="email"' in r.text
         assert 'name="password"' in r.text
 
-    def test_protected_home_redirects(self, client):
-        r = client.get("/")
+    def test_protected_dashboard_redirects(self, client):
+        r = client.get("/dashboard")
         assert r.status_code == 303
         assert r.headers["location"] == "/login"
 
@@ -177,7 +182,7 @@ class TestAuth:
 
 class TestAuthenticatedUI:
     def test_home_lists_project_with_progress(self, authed_client):
-        r = authed_client.get("/")
+        r = authed_client.get("/dashboard")
         assert r.status_code == 200
         assert "UI Test Project" in r.text
         assert "/static/css/app.css" in r.text

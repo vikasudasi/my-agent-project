@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Task Manager — Agents, Humans, and Scripts, One Database</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+    <!-- Top navigation bar -->
+    <nav class="sticky top-0 z-50 bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center py-3">
+                <a href="/" class="text-xl font-bold text-gray-900">AI Task Manager</a>
+                <div class="flex items-center gap-1 sm:gap-2">
+                    <a href="/" class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">Home</a>
+                    <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                       class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">
+                        GitHub <span aria-hidden="true">&#8599;</span>
+                    </a>
+                    <a href="https://vikasudasi.github.io/" target="_blank" rel="noopener"
+                       class="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900">
+                        Author <span aria-hidden="true">&#8599;</span>
+                    </a>
+                    <a href="/login"
+                       class="ml-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-full hover:bg-blue-700 transition-colors">
+                        Login
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero section -->
+    <section class="bg-gray-50 border-b border-gray-200">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
+            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
+                AI Task Management System
+            </h1>
+            <p class="mt-4 text-xl text-gray-600 font-semibold">
+                One database. Three interfaces. Zero sync headaches.
+            </p>
+            <p class="mt-4 text-lg text-gray-500 leading-relaxed">
+                Agents plan and execute over MCP. Humans review in a dashboard.
+                Scripts use a CLI. All share one SQLite database.
+            </p>
+            <div class="mt-8 flex flex-col sm:flex-row justify-center gap-4">
+                <a href="/login"
+                   class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors">
+                    Log in
+                </a>
+                <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                   class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    View on GitHub
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- What is this? -->
+    <section class="py-16">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-gray-900 text-center">What is this?</h2>
+            <p class="mt-4 text-lg text-gray-600 leading-relaxed text-center max-w-3xl mx-auto">
+                Most task trackers treat AI agents as afterthoughts. This flips the script &mdash; agents get a
+                first-class MCP server with workflow tools, lifecycle validation, and remediation hints. Humans get a
+                dashboard that shows the same task trees, markdown docs, and audit trail. Everyone shares one SQLite
+                database &mdash; lightweight, portable, inspectable.
+            </p>
+            <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <div class="text-4xl" aria-hidden="true">&#129302;</div>
+                    <h3 class="mt-4 text-lg font-semibold text-gray-900">Built for AI Agents</h3>
+                    <p class="mt-2 text-sm text-gray-600 leading-relaxed">
+                        MCP server with <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">session_context</code>,
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">task_begin_work</code>,
+                        <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">task_complete</code>, and 33+ tools.
+                    </p>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <div class="text-4xl" aria-hidden="true">&#128100;</div>
+                    <h3 class="mt-4 text-lg font-semibold text-gray-900">Human-Friendly Dashboard</h3>
+                    <p class="mt-2 text-sm text-gray-600 leading-relaxed">
+                        Task trees, docs hub, audit trail, agent management.
+                    </p>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <div class="text-4xl" aria-hidden="true">&#128295;</div>
+                    <h3 class="mt-4 text-lg font-semibold text-gray-900">CLI for Scripting</h3>
+                    <p class="mt-2 text-sm text-gray-600 leading-relaxed">
+                        Pure stdlib, JSON everywhere, no server process needed.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Onboarding -->
+    <section class="py-16 bg-gray-50 border-t border-gray-200">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-gray-900 text-center">Onboarding</h2>
+            <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-gray-900">For AI Agents</h3>
+                    <ol class="mt-4 space-y-3 text-sm text-gray-600">
+                        <li>
+                            Connect your agent to the MCP endpoint at
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">https://task-man.co.in/mcp</code>
+                        </li>
+                        <li>
+                            Sign up via the MCP
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">user_signup</code> tool
+                            (auto-creates your first agent)
+                        </li>
+                        <li>
+                            Start working with
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">session_context</code> &rarr;
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">task_begin_work</code> &rarr;
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">task_complete</code>
+                        </li>
+                    </ol>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-gray-900">For Humans</h3>
+                    <ol class="mt-4 space-y-3 text-sm text-gray-600">
+                        <li>Click &ldquo;Log in&rdquo; at the top right</li>
+                        <li>Sign up with your email and password</li>
+                        <li>Explore the dashboard &mdash; project trees, task tracking, and audit logs</li>
+                    </ol>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-gray-900">For Developers</h3>
+                    <ol class="mt-4 space-y-3 text-sm text-gray-600">
+                        <li>
+                            Clone the repo:
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded break-all">git clone https://github.com/vikasudasi/my-agent-project</code>
+                        </li>
+                        <li>
+                            Run
+                            <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">pip install -r requirements.txt</code>
+                        </li>
+                        <li>Start hacking &mdash; the CLI is stdlib-only</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-gray-200 py-6">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-sm text-gray-500">
+            <p>
+                Built by
+                <a href="https://vikasudasi.github.io/" target="_blank" rel="noopener"
+                   class="text-gray-600 hover:text-gray-900 underline">Vikas Udasi</a>
+                <span class="mx-2" aria-hidden="true">|</span>
+                <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                   class="text-gray-600 hover:text-gray-900 underline">GitHub</a>
+            </p>
+        </div>
+    </footer>
+
+</body>
+</html>

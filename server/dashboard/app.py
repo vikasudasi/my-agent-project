@@ -210,9 +210,10 @@ def _pagination_offset(page: int, limit: int) -> int:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    public_paths = {"/login", "/static/"}
+    exact_paths = {"/", "/login", "/logout"}
+    prefix_paths = {"/static/"}
     path = request.url.path
-    if any(path.startswith(p) for p in public_paths):
+    if path in exact_paths or any(path.startswith(p) for p in prefix_paths):
         return await call_next(request)
 
     user = _get_session_user(request)
@@ -236,7 +237,7 @@ async def flash_middleware(request: Request, call_next):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
     if _get_session_user(request):
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/dashboard", status_code=303)
     return templates.TemplateResponse(
         request,
         "login.html",
@@ -255,7 +256,7 @@ async def login(request: Request,
             {"error": "Invalid email or password", "current_user": None},
         )
     token = _create_session(user)
-    redirect = RedirectResponse(url="/", status_code=303)
+    redirect = RedirectResponse(url="/dashboard", status_code=303)
     redirect.set_cookie(key="session", value=token, httponly=True, max_age=86400 * 7)
     return redirect
 
@@ -265,7 +266,7 @@ async def logout(request: Request):
     token = request.cookies.get("session")
     if token:
         _sessions.pop(token, None)
-    response = RedirectResponse(url="/login", status_code=303)
+    response = RedirectResponse(url="/", status_code=303)
     response.delete_cookie("session")
     return response
 
@@ -275,6 +276,17 @@ async def logout(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
+async def landing(request: Request):
+    """Public landing page — always rendered, no auth required."""
+    user = _get_session_user(request)
+    return templates.TemplateResponse(
+        request,
+        "landing.html",
+        {"user": user},
+    )
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
 async def home(
     request: Request,
     q: str = Query(""),
@@ -307,7 +319,7 @@ async def project_create(request: Request, name: str = Form(...), description: s
     result = create_project(name, description, user_id=user["id"])
     agent, master, uid = _dashboard_actor(user)
     log_audit(agent, master, "project", result["id"], "created", user_id=uid)
-    return _flash_redirect("/", f"Project \"{name}\" created.")
+    return _flash_redirect("/dashboard", f"Project \"{name}\" created.")
 
 
 @app.post("/projects/{project_id}/archive")
@@ -318,7 +330,7 @@ async def project_archive(request: Request, project_id: str):
     if old:
         agent, master, uid = _dashboard_actor(user)
         log_audit(agent, master, "project", project_id, "updated", "status", old["status"], "archived", user_id=uid)
-    return _flash_redirect("/", "Project archived.")
+    return _flash_redirect("/dashboard", "Project archived.")
 
 
 @app.post("/projects/{project_id}/restore")
@@ -401,7 +413,7 @@ async def task_update_route(
 
     task = result or get_task(task_id, user_id=user["id"])
     if not task:
-        return _flash_redirect("/", "Task not found.", "error")
+        return _flash_redirect("/dashboard", "Task not found.", "error")
 
     if hx_request:
         response = HTMLResponse("")
@@ -681,7 +693,7 @@ async def admin_agent_detail(
             audit=audit_data["entries"],
             pagination=audit_data,
             new_key=None,
-            back_url="/",
+            back_url="/dashboard",
             back_label="Dashboard",
         ),
     )
@@ -705,7 +717,7 @@ async def admin_agent_reissue(request: Request, agent_id: str):
             new_key=result["api_key"],
             audit=audit_data["entries"],
             pagination=audit_data,
-            back_url="/",
+            back_url="/dashboard",
             back_label="Dashboard",
         ),
     )
