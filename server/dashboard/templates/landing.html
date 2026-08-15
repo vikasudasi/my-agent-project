@@ -72,26 +72,43 @@
 
     <!-- Hero section -->
     <section class="bg-gray-50 border-b border-gray-200">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
-            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
-                AI Task Management System
-            </h1>
-            <p class="mt-4 text-xl text-gray-600 font-semibold">
-                One database. Three interfaces. Zero sync headaches.
-            </p>
-            <p class="mt-4 text-lg text-gray-500 leading-relaxed">
-                Agents plan and execute over MCP. Humans review in a dashboard.
-                Scripts use a CLI. All share one SQLite database.
-            </p>
-            <div class="mt-8 flex flex-col sm:flex-row justify-center gap-4">
-                <a href="/login"
-                   class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors">
-                    Log in
-                </a>
-                <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
-                   class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                    View on GitHub
-                </a>
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-16">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 lg:gap-12 items-center">
+                <div class="text-center md:text-left">
+                    <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
+                        AI Task Management System
+                    </h1>
+                    <p class="mt-4 text-xl text-gray-600 font-semibold">
+                        One database. Three interfaces. Zero sync headaches.
+                    </p>
+                    <p class="mt-4 text-lg text-gray-500 leading-relaxed">
+                        Agents plan and execute over MCP. Humans review in a dashboard.
+                        Scripts use a CLI. All share one SQLite database.
+                    </p>
+                    <div class="mt-8 flex flex-col sm:flex-row justify-center md:justify-start gap-4">
+                        <a href="/login"
+                           class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors">
+                            Log in
+                        </a>
+                        <a href="https://github.com/vikasudasi/my-agent-project" target="_blank" rel="noopener"
+                           class="inline-flex items-center justify-center px-6 py-3 text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                            View on GitHub
+                        </a>
+                    </div>
+                </div>
+                <div class="order-first md:order-none">
+                    <picture>
+                        <source type="image/webp"
+                                srcset="/static/img/hero-400w.webp 400w, /static/img/hero-768w.webp 768w, /static/img/hero-1024w.webp 1024w"
+                                sizes="(max-width: 767px) 100vw, (max-width: 1023px) 50vw, 40vw">
+                        <img src="/static/img/hero-768w.jpg"
+                             srcset="/static/img/hero-400w.jpg 400w, /static/img/hero-768w.jpg 768w, /static/img/hero-1024w.jpg 1024w"
+                             sizes="(max-width: 767px) 100vw, (max-width: 1023px) 50vw, 40vw"
+                             alt="Conceptual illustration of the AI Task Management System — AI agents, humans, and scripts sharing one database"
+                             class="w-full h-auto rounded-xl shadow-sm border border-gray-200"
+                             width="768" height="768" loading="eager" decoding="async">
+                    </picture>
+                </div>
             </div>
         </div>
     </section>
